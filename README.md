@@ -48,7 +48,7 @@ zsh build.sh
 python3 install.py
 ```
 
-安装前验证构建签名，替换失败时尝试恢复原安装。应用直接使用本机 Codex App Server 的只读额度查询接口；不启动模型对话，不自动消耗重置券，也不读取或保存登录令牌。福利重置预测读取 [远程纯文本配置](https://config-center-1412625299.cos.ap-guangzhou.myqcloud.com/config/codex_reset)，支持 `yyyy-MM-dd HH:mm:ss`、ISO 8601 和 Unix 时间戳；无时区格式按 `Asia/Shanghai` 解析。请求失败时保留上次成功获取的预测时间。
+安装前验证构建签名，替换失败时尝试恢复原安装。应用直接使用本机 Codex App Server 的只读额度查询接口；不启动模型对话，不自动消耗重置券，也不读取或保存登录令牌。福利重置预测读取 [远程纯文本配置](https://config-center-1412625299.cos.ap-guangzhou.myqcloud.com/config/test/codex_reset)，支持 `yyyy-MM-dd HH:mm:ss`、ISO 8601 和 Unix 时间戳；无时区格式按 `Asia/Shanghai` 解析。请求失败时保留上次成功获取的预测时间。
 
 ```sh
 'Codex Quota.app/Contents/MacOS/CodexQuota' --self-test
@@ -73,3 +73,7 @@ python3 install.py
 
 
 刷新间隔：点击详情面板的“…” → “刷新间隔…”，可设置 10–3600 秒，默认 60 秒。保存后立即刷新一次并重设定时器；设置会保留到下次启动。手动刷新、唤醒刷新和服务端额度更新通知仍可提前触发查询。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。
