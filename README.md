@@ -65,6 +65,5 @@ python3 install.py
 检查记录见 [qa/REVIEW.md](qa/REVIEW.md)。
 接口文档：https://learn.chatgpt.com/docs/app-server#auth-endpoints
 
-签名链接：详情面板底部默认显示 bistar.ai ↗，点击打开 https://bistar.ai。右键菜单或面板“…”菜单中的“签名链接设置…”可配置签名文字及 HTTP/HTTPS 网址，保存后下次启动仍生效。胶囊及面板非按钮区域可直接按住拖动。
 
 刷新间隔：点击详情面板的“…” → “刷新间隔…”，可设置 10–3600 秒，默认 60 秒。保存后立即刷新一次并重设定时器；设置会保留到下次启动。手动刷新、唤醒刷新和服务端额度更新通知仍可提前触发查询。
