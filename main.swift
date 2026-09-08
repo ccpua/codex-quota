@@ -1,11 +1,34 @@
 import AppKit
 
+private let benefitResetEndpoint = URL(string: "https://config-center-1412625299.cos.ap-guangzhou.myqcloud.com/config/test/codex_reset")!
+
+func parseBenefitReset(_ raw: String) -> Date? {
+    let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty else { return nil }
+    if let seconds = TimeInterval(value), seconds.isFinite, seconds > 0 {
+        return Date(timeIntervalSince1970: seconds)
+    }
+    let local = DateFormatter()
+    local.locale = Locale(identifier: "en_US_POSIX")
+    local.calendar = Calendar(identifier: .gregorian)
+    local.timeZone = TimeZone(identifier: "Asia/Shanghai")
+    local.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    if let date = local.date(from: value) { return date }
+    return ISO8601DateFormatter().date(from: value)
+}
+
 struct QuotaWindow {
     let used: Double
     let minutes: Int
     let reset: Date?
     var remaining: Int { Int(max(0, min(100, 100 - used)).rounded()) }
     var name: String {
+        if usesEnglish {
+            if minutes == 10080 { return "Weekly" }
+            if minutes >= 1440 { return "\(minutes / 1440)-day" }
+            if minutes >= 60 { return "\(minutes / 60)-hour" }
+            return "\(minutes)-minute"
+        }
         if minutes == 10080 { return "本周额度" }
         if minutes == 300 { return "5 小时额度" }
         if minutes >= 1440 { return "\(minutes / 1440) 天额度" }
@@ -93,7 +116,7 @@ final class QuotaClient {
             }
         }
         do { try p.run() } catch { fail("无法启动 Codex：\(error.localizedDescription)"); return }
-        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": "1.4.0"]]])
+        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": "1.5.0"]]])
         queue.asyncAfter(deadline: .now() + 25) { [weak self] in
             guard let self = self, self.generation == currentGeneration, !self.ready else { return }
             self.fail("连接超时，请检查网络后重试。")
@@ -135,13 +158,43 @@ final class QuotaClient {
     }
 }
 
+final class BenefitResetClient {
+    private var task: URLSessionDataTask?
+    var onResult: ((Result<Date, Error>) -> Void)?
+    struct Failure: LocalizedError { let errorDescription: String? }
+
+    func refresh() {
+        task?.cancel()
+        var request = URLRequest(url: benefitResetEndpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+        request.setValue("text/plain", forHTTPHeaderField: "Accept")
+        task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            let result: Result<Date, Error>
+            if let error = error {
+                result = .failure(error)
+            } else if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                result = .failure(Failure(errorDescription: "福利重置预测服务返回 HTTP \(http.statusCode)。"))
+            } else if let data = data, let raw = String(data: data, encoding: .utf8), let date = parseBenefitReset(raw) {
+                result = .success(date)
+            } else {
+                result = .failure(Failure(errorDescription: "福利重置预测时间格式无效。"))
+            }
+            DispatchQueue.main.async { self?.onResult?(result) }
+        }
+        task?.resume()
+    }
+
+    func stop() { task?.cancel(); task = nil }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let client = QuotaClient()
+    let benefitClient = BenefitResetClient()
     var statusItem: NSStatusItem!
     var panel: NSPanel!
     var timer: Timer?
+    var benefitTimer: Timer?
     var terminationSignal: DispatchSourceSignal?
-    var state = QuotaDisplayState(refreshing: true)
+    var state = QuotaDisplayState(refreshing: true, benefitResetLoading: true)
     var surface: HoverSurface!
     var expanded = false
     var capsuleOrigin = NSPoint.zero
@@ -156,6 +209,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.setActivationPolicy(.accessory)
         UserDefaults.standard.register(defaults: ["pinned": true])
         state.pinned = UserDefaults.standard.bool(forKey: "pinned")
+        let cachedBenefitReset = UserDefaults.standard.double(forKey: "benefitResetPrediction")
+        if cachedBenefitReset > 0 {
+            state.benefitReset = Date(timeIntervalSince1970: cachedBenefitReset)
+            state.benefitResetLoading = false
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         statusItem.button?.target = self
@@ -207,9 +265,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 NSApp.terminate(nil)
             }
         }
+        benefitClient.onResult = { [weak self] result in
+            guard let self = self else { return }
+            self.state.benefitResetLoading = false
+            switch result {
+            case .success(let date):
+                self.state.benefitReset = date
+                self.state.benefitResetUnavailable = false
+                UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "benefitResetPrediction")
+            case .failure:
+                self.state.benefitResetUnavailable = self.state.benefitReset == nil
+            }
+            self.render()
+        }
         render()
         if !smokeTest { panel.orderFrontRegardless() }
         client.refresh()
+        benefitClient.refresh()
+        let predictionTimer = Timer(timeInterval: 600, repeats: true) { [weak self] _ in
+            self?.benefitClient.refresh()
+        }
+        benefitTimer = predictionTimer
+        RunLoop.main.add(predictionTimer, forMode: .common)
         scheduleRefresh()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(refresh), name: NSWorkspace.didWakeNotification, object: nil)
         signal(SIGTERM, SIG_IGN)
@@ -223,31 +300,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return false
     }
     func applicationWillTerminate(_ notification: Notification) {
-        timer?.invalidate(); transitionTimer?.invalidate(); client.stop(); terminationSignal?.cancel()
+        timer?.invalidate(); benefitTimer?.invalidate(); transitionTimer?.invalidate(); client.stop(); benefitClient.stop(); terminationSignal?.cancel()
         hoverWork?.cancel()
         if !smokeTest { savePosition() }
     }
     func scheduleRefresh() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: refreshIntervalSeconds, repeats: true) { [weak self] _ in self?.refresh() }
+        timer = Timer.scheduledTimer(withTimeInterval: refreshIntervalSeconds, repeats: true) { [weak self] _ in self?.refreshQuota() }
     }
     @objc func configureRefreshInterval() {
         menuOpen = true
         hoverWork?.cancel()
         defer { menuOpen = false; handleHover(panel.frame.contains(NSEvent.mouseLocation)) }
         let alert = NSAlert()
-        alert.messageText = "自动刷新间隔"
-        alert.informativeText = "输入 10–3600 秒。保存后立即生效，并在下次启动时保留。"
+        alert.messageText = tr("自动刷新间隔", "Refresh interval")
+        alert.informativeText = tr("输入 10–3600 秒。保存后立即生效，并在下次启动时保留。", "Enter 10–3600 seconds. Changes apply immediately and are saved.")
         let input = NSTextField(string: String(Int(refreshIntervalSeconds)))
         input.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
         alert.accessoryView = input
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: tr("保存", "Save"))
+        alert.addButton(withTitle: tr("取消", "Cancel"))
         NSApp.activate(ignoringOtherApps: true)
         while alert.runModal() == .alertFirstButtonReturn {
             guard let seconds = Double(input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)),
                   seconds.isFinite, seconds >= 10, seconds <= 3600 else {
-                alert.informativeText = "请输入 10 到 3600 之间的秒数。"; continue
+                alert.informativeText = tr("请输入 10 到 3600 之间的秒数。", "Enter a value between 10 and 3600 seconds."); continue
             }
             UserDefaults.standard.set(seconds.rounded(), forKey: "refreshIntervalSeconds")
             scheduleRefresh()
@@ -256,7 +333,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             break
         }
     }
-    @objc func refresh() { guard !state.refreshing else { return }; state.refreshing = true; render(); client.refresh() }
+    @objc func refresh() {
+        benefitClient.refresh()
+        refreshQuota()
+    }
+    func refreshQuota() {
+        guard !state.refreshing else { return }
+        state.refreshing = true; render(); client.refresh()
+    }
     func showPanel() { setExpanded(false); panel.orderFrontRegardless() }
     func savePosition() { UserDefaults.standard.set([capsuleOrigin.x, capsuleOrigin.y], forKey: "capsuleOrigin") }
     @objc func togglePanel() {
@@ -280,9 +364,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         makeMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
         menuOpen = false; handleHover(panel.frame.contains(NSEvent.mouseLocation))
     }
+    func addDisplayPreferences(to menu: NSMenu) {
+        let language = NSMenuItem(title: tr("语言", "Language"), action: nil, keyEquivalent: "")
+        let languages = NSMenu()
+        for (code, title) in [("zh", "中文"), ("en", "English")] {
+            let item = NSMenuItem(title: title, action: #selector(changeLanguage(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = code
+            item.state = (usesEnglish ? code == "en" : code == "zh") ? .on : .off
+            languages.addItem(item)
+        }
+        language.submenu = languages; menu.addItem(language)
+        let zone = NSMenuItem(title: tr("时区", "Time zone") + " · " + displayTimeZone.identifier, action: nil, keyEquivalent: "")
+        let zones = NSMenu()
+        let system = NSMenuItem(title: tr("跟随系统", "System time zone"), action: #selector(changeTimeZone(_:)), keyEquivalent: "")
+        system.target = self; system.representedObject = ""
+        system.state = UserDefaults.standard.string(forKey: "displayTimeZone") == nil ? .on : .off
+        zones.addItem(system)
+        var groups: [String: NSMenu] = [:]
+        for identifier in Set(TimeZone.knownTimeZoneIdentifiers + ["UTC"]).sorted() {
+            let region = identifier.components(separatedBy: "/").first!
+            if groups[region] == nil {
+                let group = NSMenuItem(title: region, action: nil, keyEquivalent: "")
+                let submenu = NSMenu(); group.submenu = submenu
+                zones.addItem(group); groups[region] = submenu
+            }
+            let item = NSMenuItem(title: identifier, action: #selector(changeTimeZone(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = identifier
+            item.state = UserDefaults.standard.string(forKey: "displayTimeZone") == identifier ? .on : .off
+            groups[region]?.addItem(item)
+        }
+        zone.submenu = zones; menu.addItem(zone)
+    }
+    @objc func changeLanguage(_ sender: NSMenuItem) {
+        guard let code = sender.representedObject as? String, ["zh", "en"].contains(code) else { return }
+        UserDefaults.standard.set(code, forKey: "displayLanguage")
+        render()
+    }
+    @objc func changeTimeZone(_ sender: NSMenuItem) {
+        guard let identifier = sender.representedObject as? String else { return }
+        if identifier.isEmpty { UserDefaults.standard.removeObject(forKey: "displayTimeZone") }
+        else if TimeZone(identifier: identifier) != nil { UserDefaults.standard.set(identifier, forKey: "displayTimeZone") }
+        render()
+    }
     func makeMenu() -> NSMenu {
         let menu = NSMenu()
-        for (title, action) in [(panel.isVisible ? "隐藏小窗" : "显示小窗", #selector(togglePanel)), ("立即刷新", #selector(refresh)), ("小窗始终置顶", #selector(togglePinned))] {
+        for (title, action) in [(panel.isVisible ? tr("隐藏小窗", "Hide panel") : tr("显示小窗", "Show panel"), #selector(togglePanel)), (tr("立即刷新", "Refresh now"), #selector(refresh)), (tr("小窗始终置顶", "Always on top"), #selector(togglePinned))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             if action == #selector(togglePinned) { item.state = state.pinned ? .on : .off }
@@ -291,15 +417,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         menu.autoenablesItems = false
         menu.addItem(.separator())
-        let interval = NSMenuItem(title: "刷新间隔…（当前 \(Int(refreshIntervalSeconds)) 秒）", action: #selector(configureRefreshInterval), keyEquivalent: "")
+        addDisplayPreferences(to: menu)
+        let interval = NSMenuItem(title: tr("刷新间隔…", "Refresh interval…") + " (\(Int(refreshIntervalSeconds))s)", action: #selector(configureRefreshInterval), keyEquivalent: "")
         interval.target = self
         menu.addItem(interval)
-        let signature = NSMenuItem(title: "签名链接设置…", action: #selector(configureSignature), keyEquivalent: "")
-        signature.target = self
-        menu.addItem(signature)
-        let hint = NSMenuItem(title: "\(refreshIntervalLabel) · 手动启动", action: nil, keyEquivalent: "")
+        let hint = NSMenuItem(title: refreshIntervalLabel, action: nil, keyEquivalent: "")
         hint.isEnabled = false; menu.addItem(hint)
-        let quitItem = NSMenuItem(title: "退出 Codex Quota", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: tr("退出 Codex Quota", "Quit Codex Quota"), action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self; menu.addItem(quitItem)
         return menu
     }
@@ -378,47 +502,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         transitionTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
-    @objc func openSignature() {
-        let raw = UserDefaults.standard.string(forKey: "signatureURL") ?? "https://bistar.ai"
-        guard let url = URL(string: raw), ["https", "http"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else { return }
-        NSWorkspace.shared.open(url)
-    }
-    @objc func configureSignature() {
-        menuOpen = true
-        hoverWork?.cancel()
-        defer { menuOpen = false; handleHover(panel.frame.contains(NSEvent.mouseLocation)) }
-        let alert = NSAlert()
-        alert.messageText = "签名链接"
-        alert.informativeText = "设置面板底部显示的签名及点击后打开的网址。"
-        alert.addButton(withTitle: "保存")
-        alert.addButton(withTitle: "取消")
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 80))
-        let title = NSTextField(string: UserDefaults.standard.string(forKey: "signatureTitle") ?? "bistar.ai ↗")
-        title.frame = NSRect(x: 0, y: 45, width: 320, height: 24)
-        let url = NSTextField(string: UserDefaults.standard.string(forKey: "signatureURL") ?? "https://bistar.ai")
-        url.frame = NSRect(x: 0, y: 8, width: 320, height: 24)
-        view.addSubview(title); view.addSubview(url)
-        alert.accessoryView = view
-        NSApp.activate(ignoringOtherApps: true)
-        while alert.runModal() == .alertFirstButtonReturn {
-            let raw = url.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let parsed = URL(string: raw), ["https", "http"].contains(parsed.scheme?.lowercased() ?? ""),
-                  parsed.host != nil, !title.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                alert.informativeText = "请输入签名文字，以及有效的 http:// 或 https:// 网址。"; continue
-            }
-            UserDefaults.standard.set(title.stringValue, forKey: "signatureTitle")
-            UserDefaults.standard.set(raw, forKey: "signatureURL")
-            render()
-            break
-        }
-    }
-
     func render() {
         guard !dragging else { return }
         statusItem.button?.title = state.menuTitle
-        let details = state.windows.map { "\($0.name)剩余 \($0.remaining)%" }.joined(separator: "；")
-        statusItem.button?.toolTip = "\(details)\(state.error.map { "\n\($0)" } ?? "")\n\(state.freshness)\n左键：显示/隐藏小窗；右键：菜单"
-        statusItem.button?.setAccessibilityLabel("Codex Quota：\(details.isEmpty ? "暂无数据" : details)")
+        let details = state.windows.map { "\($0.name) " + tr("剩余", "remaining") + " \($0.remaining)%" }.joined(separator: " · ")
+        let benefit = state.benefitReset.map { "\n" + tr("下次福利重置预测", "Next bonus reset (est.)") + ": \(benefitResetDateLabel($0)) (\(benefitResetStatus($0)))" } ?? ""
+        let warning = state.error.map { usesEnglish ? "\nQuota unavailable. Please refresh." : "\n\($0)" } ?? ""
+        statusItem.button?.toolTip = details + benefit + warning + "\n" + state.freshness + "\n" + displayTimeZone.identifier + "\n" + tr("左键：显示/隐藏小窗；右键：菜单", "Left click: show/hide panel; right click: menu")
+        statusItem.button?.setAccessibilityLabel("Codex Quota: " + (details.isEmpty ? tr("暂无数据", "No data") : details))
         surface.update(state: state, target: self, refresh: #selector(refresh), pin: #selector(togglePinned), more: #selector(showMenu(_:)), hide: #selector(togglePanel))
         setExpanded(expanded)
     }
@@ -428,6 +519,10 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     _ = NSApplication.shared
     try renderQuotaPreviews(to: URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1]))
 } else if CommandLine.arguments.contains("--self-test") {
+    let originalArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+    var testArguments = originalArguments
+    testArguments["displayLanguage"] = "zh"
+    UserDefaults.standard.setVolatileDomain(testArguments, forName: UserDefaults.argumentDomain)
     func window(_ used: Double, _ minutes: Int) -> [String: Any] { ["usedPercent": used, "windowDurationMins": minutes, "resetsAt": 1789367143.0] }
     precondition(validatedRefreshInterval(0) == 60)
     precondition(validatedRefreshInterval(.nan) == 60)
@@ -445,8 +540,17 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     precondition(both.count == 2 && both[0].remaining == 92)
     let now = Date(timeIntervalSince1970: 1000)
     precondition(resetCountdown(now.addingTimeInterval(65), now: now) == "2分钟后")
-    precondition(resetCountdown(now.addingTimeInterval(-1), now: now) == "等待重置")
+    precondition(resetCountdown(now.addingTimeInterval(-1), now: now) == tr("等待重置", "Awaiting reset"))
     precondition(resetCountdown(nil, now: now) == "")
+    let predicted = parseBenefitReset("2026-09-08 10:30:00\n")!
+    var shanghai = Calendar(identifier: .gregorian); shanghai.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+    let predictedParts = shanghai.dateComponents([.year, .month, .day, .hour, .minute, .second], from: predicted)
+    precondition(predictedParts.year == 2026 && predictedParts.month == 9 && predictedParts.day == 8 && predictedParts.hour == 10 && predictedParts.minute == 30)
+    precondition(parseBenefitReset("not-a-date") == nil)
+    precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "UTC")!).string(from: predicted) == "2026-09-08 02:30")
+    precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "America/Los_Angeles")!).string(from: predicted) == "2026-09-07 19:30")
+    let winter = parseBenefitReset("2026-01-08 10:30:00")!
+    precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "America/Los_Angeles")!).string(from: winter) == "2026-01-07 18:30")
     precondition(QuotaDisplayState(windows: both).menuTitle == "Codex 37%")
     precondition(QuotaDisplayState(windows: both, error: "离线").menuTitle == "Codex 37% ⚠︎")
     precondition(QuotaDisplayState(error: "离线").menuTitle == "Codex —")
@@ -461,7 +565,15 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
         let compact = quotaFrame(origin: layout.capsuleOrigin, expandedSize: NSSize(width: 96, height: 34), area: screen)
         precondition(screen.contains(compact.frame) && compact.frame.maxY == layout.frame.maxY)
     }
-    print("Passed: missing/dual/legacy quotas, countdown, stale-data warning, left/right expansion, screen edges and compact restoration.")
+    testArguments["displayLanguage"] = "en"
+    testArguments["displayTimeZone"] = "UTC"
+    UserDefaults.standard.setVolatileDomain(testArguments, forName: UserDefaults.argumentDomain)
+    precondition(both[0].name == "5-hour")
+    precondition(resetCountdown(now.addingTimeInterval(65), now: now) == "in 2m")
+    precondition(benefitResetDateLabel(predicted) == "9/8 02:30")
+    precondition(benefitResetStatus(now, now: now) == "Awaiting new forecast")
+    UserDefaults.standard.setVolatileDomain(originalArguments, forName: UserDefaults.argumentDomain)
+    print("Passed: quotas, language switching, Beijing parsing, time zones, DST, countdowns and screen geometry.")
 } else {
     let app = NSApplication.shared
     let delegate = AppDelegate()

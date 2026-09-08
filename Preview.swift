@@ -20,7 +20,9 @@ func renderQuotaPreviews(to directory: URL) throws {
     var checked = 0
     for theme in [NSAppearance.Name.aqua, .darkAqua] {
         let appearance = NSAppearance(named: theme)!
-        for (name, state) in states {
+        for (name, baseState) in states {
+            var state = baseState
+            state.benefitReset = now.addingTimeInterval(86400 * 6 + 3600 * 20)
             let view = HoverSurface(frame: NSRect(x: 0, y: 0, width: 280, height: 216))
             view.expanded = true
             view.update(state: state, target: nil, refresh: nil, pin: nil, more: nil, hide: nil)

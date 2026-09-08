@@ -3,11 +3,25 @@ import AppKit
 func resetCountdown(_ reset: Date?, now: Date = Date()) -> String {
     guard let reset = reset else { return "" }
     let seconds = reset.timeIntervalSince(now)
-    if seconds <= 0 { return "等待重置" }
+    if seconds <= 0 { return tr("等待重置", "Awaiting reset") }
     let minutes = max(1, Int(ceil(seconds / 60)))
+    if usesEnglish {
+        if minutes >= 1440 { return "in \(minutes / 1440)d \((minutes % 1440) / 60)h" }
+        if minutes >= 60 { return "in \(minutes / 60)h \(minutes % 60)m" }
+        return "in \(minutes)m"
+    }
     if minutes >= 1440 { return "\(minutes / 1440)天\((minutes % 1440) / 60)小时后" }
     if minutes >= 60 { return "\(minutes / 60)小时\(minutes % 60)分钟后" }
     return "\(minutes)分钟后"
+}
+
+func benefitResetDateLabel(_ date: Date) -> String {
+    let format = displayFormatter("M/d HH:mm")
+    return format.string(from: date)
+}
+
+func benefitResetStatus(_ date: Date, now: Date = Date()) -> String {
+    date <= now ? tr("等待预测更新", "Awaiting new forecast") : resetCountdown(date, now: now)
 }
 
 func validatedRefreshInterval(_ value: Double) -> Double {
@@ -16,7 +30,7 @@ func validatedRefreshInterval(_ value: Double) -> Double {
 var refreshIntervalSeconds: Double {
     validatedRefreshInterval(UserDefaults.standard.double(forKey: "refreshIntervalSeconds"))
 }
-var refreshIntervalLabel: String { "每 \(Int(refreshIntervalSeconds)) 秒自动刷新" }
+var refreshIntervalLabel: String { tr("每 \(Int(refreshIntervalSeconds)) 秒自动刷新", "Refresh every \(Int(refreshIntervalSeconds))s") }
 
 struct QuotaDisplayState {
     var windows: [QuotaWindow] = []
@@ -24,18 +38,21 @@ struct QuotaDisplayState {
     var error: String?
     var refreshing = false
     var pinned = true
+    var benefitReset: Date?
+    var benefitResetLoading = false
+    var benefitResetUnavailable = false
     var remaining: Int? { windows.map({ $0.remaining }).min() }
     var menuTitle: String {
         guard let remaining = remaining else { return refreshing ? "Codex ···" : "Codex —" }
         return "Codex \(remaining)%\(error == nil ? "" : " ⚠︎")"
     }
     var freshness: String {
-        if refreshing { return "正在更新" }
+        if refreshing { return tr("正在更新", "Updating") }
         guard let date = lastUpdated else { return refreshIntervalLabel }
-        let format = DateFormatter(); format.dateFormat = "HH:mm:ss"
+        let format = displayFormatter("HH:mm:ss")
         return "\(statePrefix) \(format.string(from: date))"
     }
-    private var statePrefix: String { error == nil ? "已更新" : "上次更新" }
+    private var statePrefix: String { error == nil ? tr("已更新", "Updated") : tr("上次更新", "Last update") }
 }
 
 private let primaryInk = NSColor(srgbRed: 0.95, green: 0.96, blue: 0.97, alpha: 1)
@@ -81,8 +98,8 @@ final class QuotaCapsuleView: NSView {
         super.init(frame: NSRect(x: 0, y: 0, width: 96, height: 34))
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("Codex 剩余额度 \(state.remaining.map { "\($0)%" } ?? "暂无数据")；悬停展开详情")
-        toolTip = "悬停查看详情 · 拖动调整位置"
+        setAccessibilityLabel(tr("Codex 剩余额度", "Codex remaining quota") + " " + (state.remaining.map { "\($0)%" } ?? "—"))
+        toolTip = tr("悬停查看详情 · 拖动调整位置", "Hover for details · Drag to move")
     }
     required init?(coder: NSCoder) { fatalError() }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -129,64 +146,69 @@ final class QuotaCardView: NSView {
     init(state: QuotaDisplayState, target: AnyObject?, refresh: Selector?, pin: Selector?, more: Selector?, hide: Selector?) {
         self.state = state
         let blockCount = max(1, state.windows.count)
-        contentHeight = 52 + CGFloat(blockCount) * 122 + (state.error == nil ? 0 : 44) + 68
+        let errorHeight: CGFloat = state.error == nil ? 0 : 44
+        contentHeight = 52 + CGFloat(blockCount) * 122 + errorHeight + 50 + 44
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: contentHeight))
         appearance = NSAppearance(named: .darkAqua)
         setAccessibilityElement(false)
         let brand = text("CODEX", x: 20, y: 17, width: 110, size: 10, color: primaryInk, weight: .semibold)
         brand.attributedStringValue = NSAttributedString(string: "CODEX", attributes: [.font: brand.font!, .foregroundColor: primaryInk, .kern: 1.8])
-        pinButton = icon("pin\(state.pinned ? ".fill" : "")", label: state.pinned ? "取消置顶" : "置顶小窗", x: 175, y: 10, target: target, action: pin)
+        pinButton = icon("pin\(state.pinned ? ".fill" : "")", label: state.pinned ? tr("取消置顶", "Unpin") : tr("置顶小窗", "Pin panel"), x: 175, y: 10, target: target, action: pin)
         pinButton.contentTintColor = state.pinned ? quotaAccent(80) : secondaryInk
-        moreButton = icon("ellipsis", label: "更多选项", x: 207, y: 10, target: target, action: more)
-        hideButton = icon("xmark", label: "隐藏小窗", x: 239, y: 10, target: target, action: hide)
+        moreButton = icon("ellipsis", label: tr("更多选项", "More options"), x: 207, y: 10, target: target, action: more)
+        hideButton = icon("xmark", label: tr("隐藏小窗", "Hide panel"), x: 239, y: 10, target: target, action: hide)
         if state.windows.isEmpty {
-            text("账户剩余额度", x: 20, y: 53, width: 240, size: 11, color: secondaryInk)
+            text(tr("账户剩余额度", "Remaining quota"), x: 20, y: 53, width: 240, size: 11, color: secondaryInk)
             text("—", x: 18, y: 73, width: 160, height: 50, size: 39, weight: .medium)
-            text(state.refreshing ? "正在连接你的 Codex…" : "暂无可用额度数据", x: 20, y: 142, width: 240, size: 11, color: secondaryInk)
+            text(state.refreshing ? tr("正在连接你的 Codex…", "Connecting to Codex…") : tr("暂无可用额度数据", "No quota data available"), x: 20, y: 142, width: 240, size: 11, color: secondaryInk)
         }
-        let dateFormat = DateFormatter(); dateFormat.dateFormat = "M/d HH:mm"
+        let dateFormat = displayFormatter("M/d HH:mm")
         for (index, window) in state.windows.enumerated() {
             let y = 53 + CGFloat(index) * 122
             let name = window.name.replacingOccurrences(of: "额度", with: "")
-            text("\(name)剩余", x: 20, y: y, width: 170, size: 11, color: secondaryInk)
+            text(tr("\(name)剩余", "\(name) remaining"), x: 20, y: y, width: 170, size: 11, color: secondaryInk)
             let number = text("\(window.remaining)", x: 18, y: y + 17, width: 140, height: 49, size: 39, weight: .medium)
             number.font = .monospacedDigitSystemFont(ofSize: 39, weight: .medium)
             let numberWidth = (number.stringValue as NSString).size(withAttributes: [.font: number.font!]).width
             text("%", x: 21 + numberWidth, y: y + 36, width: 26, height: 26, size: 18, color: secondaryInk)
-            let condition = state.error != nil ? "待更新" : window.remaining == 0 ? "已用尽" : window.remaining <= 10 ? "即将用尽" : window.remaining <= 25 ? "额度偏低" : "可用"
+            let condition = state.error != nil ? tr("待更新", "Stale") : window.remaining == 0 ? tr("已用尽", "Used up") : window.remaining <= 10 ? tr("即将用尽", "Very low") : window.remaining <= 25 ? tr("额度偏低", "Low") : tr("可用", "Available")
             let badge = text(condition, x: 187, y: y + 38, width: 73, size: 10, color: state.error == nil ? quotaAccent(window.remaining) : secondaryInk)
             badge.alignment = .right
             let progress = QuotaProgressView(frame: NSRect(x: 20, y: y + 76, width: 240, height: 4), remaining: window.remaining)
-            progress.setAccessibilityElement(true); progress.setAccessibilityLabel("\(name)剩余百分比"); progress.setAccessibilityValue("\(window.remaining)%")
+            progress.setAccessibilityElement(true); progress.setAccessibilityLabel(tr("\(name)剩余百分比", "\(name) remaining percent")); progress.setAccessibilityValue("\(window.remaining)%")
             addSubview(progress)
             if let reset = window.reset {
-                text("\(dateFormat.string(from: reset)) 重置", x: 20, y: y + 91, width: 137, size: 10, color: secondaryInk)
+                text(tr("\(dateFormat.string(from: reset)) 重置", "Resets \(dateFormat.string(from: reset))"), x: 20, y: y + 91, width: 137, size: 10, color: secondaryInk)
                 let countdown = text(resetCountdown(reset), x: 157, y: y + 91, width: 103, size: 10, color: secondaryInk)
                 countdown.alignment = .right
-                countdown.toolTip = "\(resetCountdown(reset))重置，以服务器更新时间为准"
+                countdown.toolTip = displayFormatter("yyyy-MM-dd HH:mm:ss zzz").string(from: reset)
             } else {
-                text("暂未提供重置时间", x: 20, y: y + 91, width: 240, size: 10, color: secondaryInk)
+                text(tr("暂未提供重置时间", "Reset time unavailable"), x: 20, y: y + 91, width: 240, size: 10, color: secondaryInk)
             }
         }
         let errorY = 52 + CGFloat(blockCount) * 122
         if let error = state.error {
-            let message = text(error, x: 20, y: errorY, width: 240, height: 39, size: 10, color: quotaAccent(20))
-            message.maximumNumberOfLines = 2; message.lineBreakMode = .byWordWrapping; message.toolTip = error
+            let message = text(usesEnglish ? "Quota unavailable. Check your connection and Codex login, then refresh." : error, x: 20, y: errorY, width: 240, height: 39, size: 10, color: quotaAccent(20))
+            message.maximumNumberOfLines = 2; message.lineBreakMode = .byWordWrapping; message.toolTip = message.stringValue
         }
-        let footerY = contentHeight - 68
+        let benefitY = errorY + (state.error == nil ? 0 : 44)
+        let benefitSeparator = NSBox(frame: NSRect(x: 20, y: benefitY, width: 240, height: 1)); benefitSeparator.boxType = .separator; addSubview(benefitSeparator)
+        text(tr("下次福利重置（预测）", "Next bonus reset (est.)"), x: 20, y: benefitY + 10, width: 150, size: 10, color: secondaryInk, weight: .medium)
+        if let reset = state.benefitReset {
+            let date = text(benefitResetDateLabel(reset), x: 178, y: benefitY + 10, width: 82, size: 10, color: primaryInk)
+            date.alignment = .right
+            let status = text(benefitResetStatus(reset), x: 20, y: benefitY + 27, width: 240, size: 10, color: reset > Date() ? quotaAccent(80) : secondaryInk)
+            status.alignment = .right
+            status.toolTip = displayFormatter("yyyy-MM-dd HH:mm:ss zzz").string(from: reset) + " · " + displayTimeZone.identifier
+        } else {
+            let message = state.benefitResetLoading ? tr("正在获取预测…", "Loading forecast…") : state.benefitResetUnavailable ? tr("预测暂不可用", "Forecast unavailable") : tr("暂未提供预测", "No forecast available")
+            text(message, x: 20, y: benefitY + 27, width: 240, size: 10, color: secondaryInk)
+        }
+        let footerY = benefitY + 50
         let separator = NSBox(frame: NSRect(x: 20, y: footerY, width: 240, height: 1)); separator.boxType = .separator; addSubview(separator)
         text(state.freshness, x: 20, y: footerY + 13, width: 202, size: 10, color: secondaryInk)
-        refreshButton = icon("arrow.clockwise", label: "立即刷新（\(refreshIntervalLabel)）", x: 235, y: footerY + 6, target: target, action: refresh)
+        refreshButton = icon("arrow.clockwise", label: tr("立即刷新", "Refresh now") + " · " + refreshIntervalLabel, x: 235, y: footerY + 6, target: target, action: refresh)
         refreshButton.isEnabled = !state.refreshing
-        let signature = NSButton(title: UserDefaults.standard.string(forKey: "signatureTitle") ?? "bistar.ai ↗",
-                                 target: target, action: Selector(("openSignature")))
-        signature.frame = NSRect(x: 20, y: footerY + 39, width: 240, height: 20)
-        signature.isBordered = false
-        signature.alignment = .left
-        signature.font = .systemFont(ofSize: 10, weight: .medium)
-        signature.contentTintColor = quotaAccent(80)
-        signature.toolTip = UserDefaults.standard.string(forKey: "signatureURL") ?? "https://bistar.ai"
-        addSubview(signature)
 
     }
     required init?(coder: NSCoder) { fatalError() }

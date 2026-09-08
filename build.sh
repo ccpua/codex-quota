@@ -2,7 +2,7 @@
 set -eu
 cd "${0:A:h}"
 mkdir -p 'Codex Quota.app/Contents/MacOS' build-cache
-swiftc main.swift QuotaView.swift HoverSurface.swift HoverGeometry.swift Preview.swift -o 'Codex Quota.app/Contents/MacOS/CodexQuota' -framework AppKit -module-cache-path build-cache -O
+swiftc main.swift Preferences.swift QuotaView.swift HoverSurface.swift HoverGeometry.swift Preview.swift -o 'Codex Quota.app/Contents/MacOS/CodexQuota' -framework AppKit -module-cache-path build-cache -O
 if [[ -e 'Codex Quota.app/Contents/MacOS/CodexQuotaWatcher' ]]; then
   unlink 'Codex Quota.app/Contents/MacOS/CodexQuotaWatcher'
 fi

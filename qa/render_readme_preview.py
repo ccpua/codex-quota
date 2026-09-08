@@ -62,7 +62,7 @@ def draw_capsule(canvas, origin):
 
 def draw_panel(canvas, origin):
     x, y = origin
-    width, height = 560, 728
+    width, height = 560, 780
     shadow = Image.new("RGBA", canvas.size)
     ImageDraw.Draw(shadow).rounded_rectangle((x + 4, y + 12, x + width + 4, y + height + 12), radius=40, fill=(0, 0, 0, 105))
     canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(24)))
@@ -97,17 +97,22 @@ def draw_panel(canvas, origin):
         text(draw, (x + 40, top + 190), reset, 19, secondary, anchor="lm")
         text(draw, (x + 520, top + 190), countdown, 19, secondary, anchor="rm")
 
-    footer_y = y + 624
+    benefit_y = y + 624
+    draw.line((x + 40, benefit_y, x + 520, benefit_y), fill=(255, 255, 255, 24), width=2)
+    text(draw, (x + 40, benefit_y + 34), "下次福利重置（预测）", 19, secondary, bold=True, anchor="lm")
+    text(draw, (x + 520, benefit_y + 34), "9/15 10:30", 19, primary, anchor="rm")
+    text(draw, (x + 520, benefit_y + 70), "6天20小时后", 19, green, anchor="rm")
+
+    footer_y = y + 724
     draw.line((x + 40, footer_y, x + 520, footer_y), fill=(255, 255, 255, 24), width=2)
     text(draw, (x + 40, footer_y + 42), "已更新 14:25:36", 19, secondary, anchor="lm")
     draw.arc((x + 476, footer_y + 29, x + 500, footer_y + 53), start=20, end=320, fill=secondary, width=3)
     draw.polygon(((x + 497, footer_y + 29), (x + 503, footer_y + 37), (x + 493, footer_y + 38)), fill=secondary)
-    text(draw, (x + 40, footer_y + 86), "bistar.ai  ↗", 19, green, bold=True, anchor="lm")
 
 
 def main():
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    canvas = vertical_gradient((1040, 840), (44, 50, 59, 255), (19, 23, 29, 255))
+    canvas = vertical_gradient((1040, 892), (44, 50, 59, 255), (19, 23, 29, 255))
     background = Image.new("RGBA", canvas.size)
     backdrop = ImageDraw.Draw(background)
     backdrop.ellipse((20, 80, 620, 680), fill=(29, 129, 118, 32))
