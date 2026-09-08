@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="128" y1="64" x2="880" y2="960" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#263342"/>
+      <stop offset="0.52" stop-color="#111A26"/>
+      <stop offset="1" stop-color="#080D16"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="152" y1="90" x2="870" y2="930" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#B6FFF0" stop-opacity="0.88"/>
+      <stop offset="0.46" stop-color="#4BD8C2" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#6D8BFF" stop-opacity="0.40"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="260" y1="742" x2="747" y2="227" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#55E0C7"/>
+      <stop offset="0.68" stop-color="#77F5DB"/>
+      <stop offset="1" stop-color="#C4FFF3"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="404" y1="664" x2="637" y2="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#49D9C0"/>
+      <stop offset="1" stop-color="#D1FFF6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded tile with a quiet glass highlight. -->
+  <rect x="48" y="48" width="928" height="928" rx="224" fill="#02060B" opacity="0.42"/>
+  <rect x="42" y="32" width="940" height="940" rx="228" fill="url(#tile)"/>
+  <rect x="48" y="38" width="928" height="928" rx="222" fill="none" stroke="url(#edge)" stroke-width="8"/>
+  <path d="M264 74h496c111 0 190 87 190 196v46C802 236 696 181 548 168 369 152 218 197 103 304v-34C103 160 171 74 264 74Z" fill="#FFFFFF" opacity="0.055"/>
+
+  <!-- Quota ring: 76% available, with a small amber checkpoint. -->
+  <circle cx="512" cy="512" r="280" fill="none" stroke="#FFFFFF" stroke-opacity="0.10" stroke-width="42"/>
+  <circle cx="512" cy="512" r="280" fill="none" stroke="url(#ring)" stroke-width="42" stroke-linecap="round" stroke-dasharray="1341 418" transform="rotate(-90 512 512)"/>
+  <circle cx="512" cy="512" r="280" fill="none" stroke="#F6C568" stroke-width="42" stroke-linecap="round" stroke-dasharray="32 1727" transform="rotate(-14 512 512)"/>
+
+  <!-- Geometric code spark / four-point star. -->
+  <circle cx="512" cy="512" r="156" fill="#0A151D" fill-opacity="0.74" stroke="#A8FFF0" stroke-opacity="0.20" stroke-width="3"/>
+  <path d="M512 344 548 476 680 512 548 548 512 680 476 548 344 512 476 476Z" fill="url(#spark)"/>
+  <path d="M512 397 531 493 627 512 531 531 512 627 493 531 397 512 493 493Z" fill="#F2FFFC" opacity="0.84"/>
+  <circle cx="512" cy="512" r="18" fill="#FFFFFF"/>
+
+  <circle cx="512" cy="512" r="332" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" stroke-width="2"/>
+</svg>
