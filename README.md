@@ -1,0 +1,70 @@
+# Codex Quota
+
+macOS 菜单栏额度监测器，带悬停展开的置顶额度胶囊。
+
+**首次安装请阅读 [完整安装指南](INSTALL.md)**，包含环境准备、安装验证、升级、卸载和常见问题。
+
+![Codex Quota 胶囊与双额度详情面板](docs/images/codex-quota-preview.png)
+
+## 使用
+
+- 默认仅显示 **96 × 34 pt** 的胶囊：剩余百分比与细进度环。
+- 鼠标悬停约 0.1 秒后平滑展开详情；移开约 0.32 秒后平滑收起。
+- 详情为 280 pt 宽：各额度周期、进度条、重置日期/倒计时、更新时间和刷新按钮。
+- 可拖动胶囊调整位置；自动选择左右展开方向，限制在屏幕内。位置与置顶设置会保存。
+- 详情顶部的图钉切换置顶，“…”打开菜单，“×”隐藏整个胶囊。
+- 菜单栏显示 `Codex 36%`。左键显示/隐藏胶囊，右键打开菜单。
+- 每 60 秒更新，电脑唤醒时也会更新。请求失败保留上次数据并显示警告，不会把缺失数据当作 0。
+- 如果返回多个额度周期，菜单栏和胶囊显示剩余比例最低的一个；展开后同时展示。
+- 默认采用深色面板、细边框、薄进度条与系统字体。数字和警告不依赖颜色区分。
+- app 使用深色“额度环 + Codex 火花”图标，在 Finder、Dock 和应用程序文件夹中保持一致。
+
+图标源文件是 `icon.svg`，构建时由 `IconRenderer.swift` 渲染为 app 内的 `Contents/Resources/AppIcon.png`。
+- 展开使用弹性伸展和内容错峰浮现，收起时反向聚拢；开启系统“减少动态效果”时即时切换；快速移入/移出不会留下半展开状态。
+
+## 启动和退出
+
+安装位置：`~/Applications/Codex Quota.app`。
+
+- 双击 app 或使用 `open "$HOME/Applications/Codex Quota.app"` 手动启动。
+- 启动或退出 Codex 不会自动启动、关闭或重新打开额度工具。
+- 安装脚本会移除旧版本创建的自动启动监听器。
+- 从菜单选择“退出 Codex Quota”即可单独关闭。
+
+## 构建与验证
+
+需要 Command Line Tools、Python 3.8+，以及已登录且能返回额度信息的 Codex。
+
+当前现成 app 已验证的环境是 Apple Silicon + macOS 26，二进制最低系统版本为 26.0；`Info.plist` 中的 13.0 声明不代表现成构建兼容旧系统。其他系统或 Intel Mac 请在目标机器上从源码构建，兼容性尚未验证，详见安装指南。
+
+```sh
+zsh build.sh
+python3 install.py
+```
+
+安装前验证构建签名，替换失败时尝试恢复原安装。应用直接使用本机 Codex App Server 的只读额度查询接口；不启动模型对话，不自动消耗重置券，也不读取或保存登录令牌。
+
+```sh
+'Codex Quota.app/Contents/MacOS/CodexQuota' --self-test
+'Codex Quota.app/Contents/MacOS/CodexQuota' --smoke-test
+'Codex Quota.app/Contents/MacOS/CodexQuota' --render-previews qa/hover-previews
+```
+
+`--smoke-test` 真实查询失败时返回非零状态；不会保存测试窗口位置。
+`--render-previews` 仅渲染应用自身视图，不读取屏幕、不查询账户，检查单行文字宽度、控件边界和刷新按钮状态。
+
+## 源码
+
+- `main.swift`：额度连接、菜单栏、悬停行为、偏好设置与刷新。
+- `QuotaView.swift`：胶囊与详情面板。
+- `HoverSurface.swift` / `HoverGeometry.swift`：鼠标跟踪、即时布局容器和屏幕边界布局。
+- `Preview.swift`：离线视觉预览和布局检查。
+- `icon.svg` / `IconRenderer.swift`：app 图标源图和 macOS 渲染器。
+- `install.py`：安装、升级和失败恢复。
+
+检查记录见 [qa/REVIEW.md](qa/REVIEW.md)。
+接口文档：https://learn.chatgpt.com/docs/app-server#auth-endpoints
+
+签名链接：详情面板底部默认显示 bistar.ai ↗，点击打开 https://bistar.ai。右键菜单或面板“…”菜单中的“签名链接设置…”可配置签名文字及 HTTP/HTTPS 网址，保存后下次启动仍生效。胶囊及面板非按钮区域可直接按住拖动。
+
+刷新间隔：点击详情面板的“…” → “刷新间隔…”，可设置 10–3600 秒，默认 60 秒。保存后立即刷新一次并重设定时器；设置会保留到下次启动。手动刷新、唤醒刷新和服务端额度更新通知仍可提前触发查询。
