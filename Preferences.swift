@@ -1,4 +1,19 @@
-import Foundation
+import AppKit
+
+enum DisplayTheme: String {
+    case system, light, dark
+}
+
+var displayTheme: DisplayTheme {
+    DisplayTheme(rawValue: UserDefaults.standard.string(forKey: "displayTheme") ?? "system") ?? .system
+}
+var configuredAppearance: NSAppearance? {
+    switch displayTheme {
+    case .system: return nil
+    case .light: return NSAppearance(named: .aqua)
+    case .dark: return NSAppearance(named: .darkAqua)
+    }
+}
 
 var usesEnglish: Bool { UserDefaults.standard.string(forKey: "displayLanguage") == "en" }
 func tr(_ chinese: String, _ english: String) -> String { usesEnglish ? english : chinese }

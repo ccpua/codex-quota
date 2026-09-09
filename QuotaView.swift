@@ -55,21 +55,30 @@ struct QuotaDisplayState {
     private var statePrefix: String { error == nil ? tr("已更新", "Updated") : tr("上次更新", "Last update") }
 }
 
-private let primaryInk = NSColor(srgbRed: 0.95, green: 0.96, blue: 0.97, alpha: 1)
-private let secondaryInk = NSColor(srgbRed: 0.62, green: 0.65, blue: 0.69, alpha: 1)
+private let primaryInk = NSColor.labelColor
+private let secondaryInk = NSColor.secondaryLabelColor
+private func quotaIsDark(_ appearance: NSAppearance = .currentDrawing()) -> Bool {
+    appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+}
 func quotaAccent(_ remaining: Int) -> NSColor {
-    if remaining <= 10 { return NSColor(srgbRed: 1.0, green: 0.49, blue: 0.48, alpha: 1) }
-    if remaining <= 25 { return NSColor(srgbRed: 0.93, green: 0.74, blue: 0.44, alpha: 1) }
-    return NSColor(srgbRed: 0.51, green: 0.83, blue: 0.73, alpha: 1)
+    NSColor(name: nil) { appearance in
+        let dark = quotaIsDark(appearance)
+        if remaining <= 10 { return NSColor(srgbRed: dark ? 1.0 : 0.82, green: dark ? 0.49 : 0.22, blue: dark ? 0.48 : 0.20, alpha: 1) }
+        if remaining <= 25 { return NSColor(srgbRed: dark ? 0.93 : 0.72, green: dark ? 0.74 : 0.43, blue: dark ? 0.44 : 0.10, alpha: 1) }
+        return NSColor(srgbRed: dark ? 0.51 : 0.12, green: dark ? 0.83 : 0.48, blue: dark ? 0.73 : 0.37, alpha: 1)
+    }
 }
 
 func drawQuotaSurface(_ bounds: NSRect, radius: CGFloat) {
     NSGraphicsContext.saveGraphicsState()
     let shape = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
     shape.addClip()
-    let gradient = NSGradient(starting: NSColor(srgbRed: 0.12, green: 0.135, blue: 0.15, alpha: 0.97), ending: NSColor(srgbRed: 0.065, green: 0.073, blue: 0.084, alpha: 0.97))!
+    let dark = quotaIsDark()
+    let gradient = dark
+        ? NSGradient(starting: NSColor(srgbRed: 0.12, green: 0.135, blue: 0.15, alpha: 0.97), ending: NSColor(srgbRed: 0.065, green: 0.073, blue: 0.084, alpha: 0.97))!
+        : NSGradient(starting: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.98), ending: NSColor(srgbRed: 0.91, green: 0.93, blue: 0.95, alpha: 0.98))!
     gradient.draw(in: bounds, angle: 90)
-    NSColor.white.withAlphaComponent(0.13).setStroke()
+    (dark ? NSColor.white.withAlphaComponent(0.13) : NSColor.black.withAlphaComponent(0.12)).setStroke()
     let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: radius - 0.5, yRadius: radius - 0.5)
     edge.lineWidth = 1; edge.stroke()
     NSGraphicsContext.restoreGraphicsState()
@@ -80,7 +89,7 @@ final class QuotaProgressView: NSView {
     init(frame: NSRect, remaining: Int) { self.remaining = remaining; super.init(frame: frame) }
     required init?(coder: NSCoder) { fatalError() }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.white.withAlphaComponent(0.09).setFill()
+        (quotaIsDark() ? NSColor.white.withAlphaComponent(0.09) : NSColor.black.withAlphaComponent(0.10)).setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 2, yRadius: 2).fill()
         if remaining > 0 {
             let fill = NSRect(x: 0, y: 0, width: bounds.width * CGFloat(remaining) / 100, height: bounds.height)
@@ -106,7 +115,7 @@ final class QuotaCapsuleView: NSView {
     override func mouseDown(with event: NSEvent) { onDrag?(event) }
     override func draw(_ dirtyRect: NSRect) {
         let ring = NSBezierPath(ovalIn: NSRect(x: 13, y: 10, width: 14, height: 14))
-        ring.lineWidth = 2; NSColor.white.withAlphaComponent(0.15).setStroke(); ring.stroke()
+        ring.lineWidth = 2; (quotaIsDark() ? NSColor.white.withAlphaComponent(0.15) : NSColor.black.withAlphaComponent(0.16)).setStroke(); ring.stroke()
         if let remaining = state.remaining, remaining > 0 {
             let arc = NSBezierPath(); arc.lineWidth = 2; arc.lineCapStyle = .round
             arc.appendArc(withCenter: NSPoint(x: 20, y: 17), radius: 7, startAngle: 90, endAngle: 90 - CGFloat(remaining) * 3.6, clockwise: true)
@@ -149,7 +158,6 @@ final class QuotaCardView: NSView {
         let errorHeight: CGFloat = state.error == nil ? 0 : 44
         contentHeight = 52 + CGFloat(blockCount) * 122 + errorHeight + 50 + 44
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: contentHeight))
-        appearance = NSAppearance(named: .darkAqua)
         setAccessibilityElement(false)
         let brand = text("CODEX", x: 20, y: 17, width: 110, size: 10, color: primaryInk, weight: .semibold)
         brand.attributedStringValue = NSAttributedString(string: "CODEX", attributes: [.font: brand.font!, .foregroundColor: primaryInk, .kern: 1.8])

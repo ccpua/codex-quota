@@ -17,9 +17,15 @@ final class HoverSurface: NSView {
         wantsLayer = true; layer?.masksToBounds = true; layer?.cornerRadius = 17
         autoresizingMask = [.width, .height]
         layerContentsRedrawPolicy = .duringViewResize
-        appearance = NSAppearance(named: .darkAqua)
     }
     required init?(coder: NSCoder) { fatalError() }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+        card?.needsDisplay = true
+        capsule?.needsDisplay = true
+        card?.subviews.forEach { $0.needsDisplay = true }
+    }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func draw(_ dirtyRect: NSRect) { drawQuotaSurface(bounds, radius: min(20, bounds.height / 2)) }
     override func updateTrackingAreas() {

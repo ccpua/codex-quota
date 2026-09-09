@@ -116,7 +116,7 @@ final class QuotaClient {
             }
         }
         do { try p.run() } catch { fail("无法启动 Codex：\(error.localizedDescription)"); return }
-        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": "1.5.0"]]])
+        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": "1.6.0"]]])
         queue.asyncAfter(deadline: .now() + 25) { [weak self] in
             guard let self = self, self.generation == currentGeneration, !self.ready else { return }
             self.fail("连接超时，请检查网络后重试。")
@@ -207,6 +207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        NSApp.appearance = configuredAppearance
         UserDefaults.standard.register(defaults: ["pinned": true])
         state.pinned = UserDefaults.standard.bool(forKey: "pinned")
         let cachedBenefitReset = UserDefaults.standard.double(forKey: "benefitResetPrediction")
@@ -374,6 +375,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             languages.addItem(item)
         }
         language.submenu = languages; menu.addItem(language)
+        let appearance = NSMenuItem(title: tr("外观", "Appearance"), action: nil, keyEquivalent: "")
+        let appearances = NSMenu()
+        let themeOptions: [(DisplayTheme, String)] = [
+            (.system, tr("跟随系统", "System")),
+            (.light, tr("浅色", "Light")),
+            (.dark, tr("深色", "Dark"))
+        ]
+        for (theme, title) in themeOptions {
+            let item = NSMenuItem(title: title, action: #selector(changeTheme(_:)), keyEquivalent: "")
+            item.target = self; item.representedObject = theme.rawValue
+            item.state = displayTheme == theme ? .on : .off
+            appearances.addItem(item)
+        }
+        appearance.submenu = appearances; menu.addItem(appearance)
         let zone = NSMenuItem(title: tr("时区", "Time zone") + " · " + displayTimeZone.identifier, action: nil, keyEquivalent: "")
         let zones = NSMenu()
         let system = NSMenuItem(title: tr("跟随系统", "System time zone"), action: #selector(changeTimeZone(_:)), keyEquivalent: "")
@@ -398,6 +413,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func changeLanguage(_ sender: NSMenuItem) {
         guard let code = sender.representedObject as? String, ["zh", "en"].contains(code) else { return }
         UserDefaults.standard.set(code, forKey: "displayLanguage")
+        render()
+    }
+    @objc func changeTheme(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let theme = DisplayTheme(rawValue: raw) else { return }
+        UserDefaults.standard.set(theme.rawValue, forKey: "displayTheme")
+        NSApp.appearance = configuredAppearance
+        panel.appearance = configuredAppearance
+        surface.appearance = configuredAppearance
         render()
     }
     @objc func changeTimeZone(_ sender: NSMenuItem) {
@@ -572,8 +595,17 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     precondition(resetCountdown(now.addingTimeInterval(65), now: now) == "in 2m")
     precondition(benefitResetDateLabel(predicted) == "9/8 02:30")
     precondition(benefitResetStatus(now, now: now) == "Awaiting new forecast")
+    testArguments["displayTheme"] = "light"
+    UserDefaults.standard.setVolatileDomain(testArguments, forName: UserDefaults.argumentDomain)
+    precondition(displayTheme == .light && configuredAppearance?.name == .aqua)
+    testArguments["displayTheme"] = "dark"
+    UserDefaults.standard.setVolatileDomain(testArguments, forName: UserDefaults.argumentDomain)
+    precondition(displayTheme == .dark && configuredAppearance?.name == .darkAqua)
+    testArguments["displayTheme"] = "invalid"
+    UserDefaults.standard.setVolatileDomain(testArguments, forName: UserDefaults.argumentDomain)
+    precondition(displayTheme == .system && configuredAppearance == nil)
     UserDefaults.standard.setVolatileDomain(originalArguments, forName: UserDefaults.argumentDomain)
-    print("Passed: quotas, language switching, Beijing parsing, time zones, DST, countdowns and screen geometry.")
+    print("Passed: quotas, language, appearance modes, Beijing parsing, time zones, DST, countdowns and screen geometry.")
 } else {
     let app = NSApplication.shared
     let delegate = AppDelegate()
