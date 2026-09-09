@@ -494,16 +494,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             finish(); return
         }
         let started = ProcessInfo.processInfo.systemUptime
-        let duration = expand ? 0.62 : 0.42
+        let duration = expand ? 0.52 : 0.42
         let itemAlphas = surface.card.subviews.map { $0.alphaValue }
         let itemTransforms = surface.card.subviews.map { $0.layer?.affineTransform() ?? .identity }
         for view in surface.card.subviews { view.wantsLayer = true }
         let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
             guard let self = self else { timer.invalidate(); return }
             let t = min(1, (ProcessInfo.processInfo.systemUptime - started) / duration)
-            // Critically controlled spring: one small crest, then a quiet settle.
-            let spring = 1 - exp(-8 * t) * cos(9 * t)
-            let eased = expand ? min(1.025, spring) : 1 - pow(1 - t, 4)
+            // Monotonic easing reaches the exact frame without overshoot, so
+            // the left and right borders never rebound after expansion.
+            let eased = 1 - pow(1 - t, 4)
             func mix(_ a: CGFloat, _ b: CGFloat) -> CGFloat { a + (b - a) * eased }
             self.panel.setFrame(NSRect(x: mix(start.minX, target.minX), y: mix(start.minY, target.minY),
                                        width: mix(start.width, target.width), height: mix(start.height, target.height)), display: true)
