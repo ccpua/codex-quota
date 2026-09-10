@@ -1,9 +1,8 @@
 .DS_Store
 build-cache/
-*.app/
 *.icns
-Codex 额度.iconset/
 AppIcon.png
+!/Codex Quota.app/Contents/Resources/AppIcon.png
 __pycache__/
 *.pyc
 qa/previews/
