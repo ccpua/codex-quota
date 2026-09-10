@@ -2,8 +2,13 @@ import AppKit
 
 private let benefitResetEndpoint = URL(string: "https://config-center-1412625299.cos.ap-guangzhou.myqcloud.com/config/test/codex_reset")!
 
-func parseBenefitReset(_ raw: String) -> Date? {
-    let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+struct BenefitResetPrediction {
+    let date: Date
+    let confidence: Double?
+    let reason: String?
+}
+
+private func parseBenefitResetDate(_ value: String) -> Date? {
     guard !value.isEmpty else { return nil }
     if let seconds = TimeInterval(value), seconds.isFinite, seconds > 0 {
         return Date(timeIntervalSince1970: seconds)
@@ -15,6 +20,28 @@ func parseBenefitReset(_ raw: String) -> Date? {
     local.dateFormat = "yyyy-MM-dd HH:mm:ss"
     if let date = local.date(from: value) { return date }
     return ISO8601DateFormatter().date(from: value)
+}
+
+func parseBenefitReset(_ raw: String) -> BenefitResetPrediction? {
+    let normalized = raw.replacingOccurrences(of: "\r\n", with: "\n")
+    let lines = normalized.components(separatedBy: "\n")
+    guard let first = lines.first else { return nil }
+    let dateValue = first.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let date = parseBenefitResetDate(dateValue) else { return nil }
+
+    var confidence: Double?
+    if lines.count > 1 {
+        let value = lines[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty {
+            guard let parsed = Double(value), parsed.isFinite, (0...1).contains(parsed) else { return nil }
+            confidence = parsed
+        }
+    }
+
+    let reasonValue = lines.count > 2
+        ? lines.dropFirst(2).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        : ""
+    return BenefitResetPrediction(date: date, confidence: confidence, reason: reasonValue.isEmpty ? nil : reasonValue)
 }
 
 struct QuotaWindow {
@@ -116,7 +143,7 @@ final class QuotaClient {
             }
         }
         do { try p.run() } catch { fail("无法启动 Codex：\(error.localizedDescription)"); return }
-        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": "1.6.0"]]])
+        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": "1.7.1"]]])
         queue.asyncAfter(deadline: .now() + 25) { [weak self] in
             guard let self = self, self.generation == currentGeneration, !self.ready else { return }
             self.fail("连接超时，请检查网络后重试。")
@@ -160,7 +187,7 @@ final class QuotaClient {
 
 final class BenefitResetClient {
     private var task: URLSessionDataTask?
-    var onResult: ((Result<Date, Error>) -> Void)?
+    var onResult: ((Result<BenefitResetPrediction, Error>) -> Void)?
     struct Failure: LocalizedError { let errorDescription: String? }
 
     func refresh() {
@@ -168,15 +195,15 @@ final class BenefitResetClient {
         var request = URLRequest(url: benefitResetEndpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
         request.setValue("text/plain", forHTTPHeaderField: "Accept")
         task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            let result: Result<Date, Error>
+            let result: Result<BenefitResetPrediction, Error>
             if let error = error {
                 result = .failure(error)
             } else if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
                 result = .failure(Failure(errorDescription: "福利重置预测服务返回 HTTP \(http.statusCode)。"))
-            } else if let data = data, let raw = String(data: data, encoding: .utf8), let date = parseBenefitReset(raw) {
-                result = .success(date)
+            } else if let data = data, let raw = String(data: data, encoding: .utf8), let prediction = parseBenefitReset(raw) {
+                result = .success(prediction)
             } else {
-                result = .failure(Failure(errorDescription: "福利重置预测时间格式无效。"))
+                result = .failure(Failure(errorDescription: "福利重置预测配置格式无效。"))
             }
             DispatchQueue.main.async { self?.onResult?(result) }
         }
@@ -186,7 +213,7 @@ final class BenefitResetClient {
     func stop() { task?.cancel(); task = nil }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     let client = QuotaClient()
     let benefitClient = BenefitResetClient()
     var statusItem: NSStatusItem!
@@ -202,6 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var transitionTimer: Timer?
     var dragging = false
     var menuOpen = false
+    var reasonPopover: NSPopover?
     var resultSucceeded = false
     let smokeTest = CommandLine.arguments.contains("--smoke-test")
 
@@ -213,6 +241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let cachedBenefitReset = UserDefaults.standard.double(forKey: "benefitResetPrediction")
         if cachedBenefitReset > 0 {
             state.benefitReset = Date(timeIntervalSince1970: cachedBenefitReset)
+            if let cachedConfidence = UserDefaults.standard.object(forKey: "benefitResetConfidence") as? NSNumber {
+                state.benefitResetConfidence = cachedConfidence.doubleValue
+            }
+            state.benefitResetReason = UserDefaults.standard.string(forKey: "benefitResetReason")
             state.benefitResetLoading = false
         }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -270,10 +302,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self = self else { return }
             self.state.benefitResetLoading = false
             switch result {
-            case .success(let date):
-                self.state.benefitReset = date
+            case .success(let prediction):
+                self.state.benefitReset = prediction.date
+                self.state.benefitResetConfidence = prediction.confidence
+                self.state.benefitResetReason = prediction.reason
                 self.state.benefitResetUnavailable = false
-                UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "benefitResetPrediction")
+                UserDefaults.standard.set(prediction.date.timeIntervalSince1970, forKey: "benefitResetPrediction")
+                if let confidence = prediction.confidence {
+                    UserDefaults.standard.set(confidence, forKey: "benefitResetConfidence")
+                } else {
+                    UserDefaults.standard.removeObject(forKey: "benefitResetConfidence")
+                }
+                if let reason = prediction.reason {
+                    UserDefaults.standard.set(reason, forKey: "benefitResetReason")
+                } else {
+                    UserDefaults.standard.removeObject(forKey: "benefitResetReason")
+                }
             case .failure:
                 self.state.benefitResetUnavailable = self.state.benefitReset == nil
             }
@@ -345,6 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func showPanel() { setExpanded(false); panel.orderFrontRegardless() }
     func savePosition() { UserDefaults.standard.set([capsuleOrigin.x, capsuleOrigin.y], forKey: "capsuleOrigin") }
     @objc func togglePanel() {
+        reasonPopover?.close()
         hoverWork?.cancel()
         if panel.isVisible { panel.orderOut(nil); setExpanded(false) } else { showPanel() }
     }
@@ -364,6 +409,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menuOpen = true; hoverWork?.cancel()
         makeMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
         menuOpen = false; handleHover(panel.frame.contains(NSEvent.mouseLocation))
+    }
+    func showForecastReason(_ sender: NSButton) {
+        if let popover = reasonPopover { popover.performClose(sender); return }
+        guard let reason = state.benefitResetReason else { return }
+        hoverWork?.cancel()
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popover.appearance = surface.effectiveAppearance
+        popover.contentViewController = ForecastReasonController(reason: reason)
+        popover.delegate = self
+        reasonPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+    }
+    func popoverDidClose(_ notification: Notification) {
+        reasonPopover = nil
+        render()
+        handleHover(panel.frame.contains(NSEvent.mouseLocation))
     }
     func addDisplayPreferences(to menu: NSMenu) {
         let language = NSMenuItem(title: tr("语言", "Language"), action: nil, keyEquivalent: "")
@@ -452,9 +515,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func handleHover(_ inside: Bool) {
         hoverWork?.cancel()
-        guard !dragging && !menuOpen else { return }
+        guard !dragging && !menuOpen && reasonPopover == nil else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self = self, !self.dragging, !self.menuOpen, self.panel.isVisible else { return }
+            guard let self = self, !self.dragging, !self.menuOpen, self.reasonPopover == nil, self.panel.isVisible else { return }
             let stillInside = self.panel.frame.contains(NSEvent.mouseLocation)
             if inside && stillInside { self.setExpanded(true, animated: true) }
             if !inside && !stillInside { self.setExpanded(false, animated: true) }
@@ -530,10 +593,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem.button?.title = state.menuTitle
         let details = state.windows.map { "\($0.name) " + tr("剩余", "remaining") + " \($0.remaining)%" }.joined(separator: " · ")
         let benefit = state.benefitReset.map { "\n" + tr("下次福利重置预测", "Next bonus reset (est.)") + ": \(benefitResetDateLabel($0)) (\(benefitResetStatus($0)))" } ?? ""
+        let confidence = state.benefitResetConfidence.map { "\n" + tr("置信度", "Confidence") + ": " + benefitConfidenceLabel($0) } ?? ""
         let warning = state.error.map { usesEnglish ? "\nQuota unavailable. Please refresh." : "\n\($0)" } ?? ""
-        statusItem.button?.toolTip = details + benefit + warning + "\n" + state.freshness + "\n" + displayTimeZone.identifier + "\n" + tr("左键：显示/隐藏小窗；右键：菜单", "Left click: show/hide panel; right click: menu")
+        statusItem.button?.toolTip = details + benefit + confidence + warning + "\n" + state.freshness + "\n" + displayTimeZone.identifier + "\n" + tr("左键：显示/隐藏小窗；右键：菜单", "Left click: show/hide panel; right click: menu")
         statusItem.button?.setAccessibilityLabel("Codex Quota: " + (details.isEmpty ? tr("暂无数据", "No data") : details))
+        // Keep the anchor view alive while the user is reading the popover.
+        // Incoming quota/forecast data is rendered after it closes.
+        guard reasonPopover == nil else { return }
         surface.update(state: state, target: self, refresh: #selector(refresh), pin: #selector(togglePinned), more: #selector(showMenu(_:)), hide: #selector(togglePanel))
+        surface.card.onShowReason = { [weak self] sender in self?.showForecastReason(sender) }
         setExpanded(expanded)
     }
 }
@@ -565,15 +633,22 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     precondition(resetCountdown(now.addingTimeInterval(65), now: now) == "2分钟后")
     precondition(resetCountdown(now.addingTimeInterval(-1), now: now) == tr("等待重置", "Awaiting reset"))
     precondition(resetCountdown(nil, now: now) == "")
-    let predicted = parseBenefitReset("2026-09-08 10:30:00\n")!
+    let predicted = parseBenefitReset("2026-09-08 10:30:00\n0.29\n无明确预告；基于近期重置间隔推测。\n")!
     var shanghai = Calendar(identifier: .gregorian); shanghai.timeZone = TimeZone(identifier: "Asia/Shanghai")!
-    let predictedParts = shanghai.dateComponents([.year, .month, .day, .hour, .minute, .second], from: predicted)
+    let predictedParts = shanghai.dateComponents([.year, .month, .day, .hour, .minute, .second], from: predicted.date)
     precondition(predictedParts.year == 2026 && predictedParts.month == 9 && predictedParts.day == 8 && predictedParts.hour == 10 && predictedParts.minute == 30)
+    precondition(predicted.confidence == 0.29)
+    precondition(predicted.reason == "无明确预告；基于近期重置间隔推测。")
+    precondition(benefitConfidenceLabel(predicted.confidence!) == "0.29")
+    let legacyPrediction = parseBenefitReset("2026-09-08 10:30:00\n")!
+    precondition(legacyPrediction.confidence == nil && legacyPrediction.reason == nil)
+    precondition(parseBenefitReset("2026-09-08 10:30:00\r\n0.29\r\nCRLF")?.reason == "CRLF")
+    precondition(parseBenefitReset("2026-09-08 10:30:00\n1.01\ninvalid") == nil)
     precondition(parseBenefitReset("not-a-date") == nil)
-    precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "UTC")!).string(from: predicted) == "2026-09-08 02:30")
-    precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "America/Los_Angeles")!).string(from: predicted) == "2026-09-07 19:30")
+    precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "UTC")!).string(from: predicted.date) == "2026-09-08 02:30")
+    precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "America/Los_Angeles")!).string(from: predicted.date) == "2026-09-07 19:30")
     let winter = parseBenefitReset("2026-01-08 10:30:00")!
-    precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "America/Los_Angeles")!).string(from: winter) == "2026-01-07 18:30")
+    precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "America/Los_Angeles")!).string(from: winter.date) == "2026-01-07 18:30")
     precondition(QuotaDisplayState(windows: both).menuTitle == "Codex 37%")
     precondition(QuotaDisplayState(windows: both, error: "离线").menuTitle == "Codex 37% ⚠︎")
     precondition(QuotaDisplayState(error: "离线").menuTitle == "Codex —")
@@ -593,7 +668,7 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     UserDefaults.standard.setVolatileDomain(testArguments, forName: UserDefaults.argumentDomain)
     precondition(both[0].name == "5-hour")
     precondition(resetCountdown(now.addingTimeInterval(65), now: now) == "in 2m")
-    precondition(benefitResetDateLabel(predicted) == "9/8 02:30")
+    precondition(benefitResetDateLabel(predicted.date) == "9/8 02:30")
     precondition(benefitResetStatus(now, now: now) == "Awaiting new forecast")
     testArguments["displayTheme"] = "light"
     UserDefaults.standard.setVolatileDomain(testArguments, forName: UserDefaults.argumentDomain)
@@ -605,7 +680,7 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     UserDefaults.standard.setVolatileDomain(testArguments, forName: UserDefaults.argumentDomain)
     precondition(displayTheme == .system && configuredAppearance == nil)
     UserDefaults.standard.setVolatileDomain(originalArguments, forName: UserDefaults.argumentDomain)
-    print("Passed: quotas, language, appearance modes, Beijing parsing, time zones, DST, countdowns and screen geometry.")
+    print("Passed: quotas, prediction fields, legacy config, language, appearance modes, Beijing parsing, time zones, DST, countdowns and screen geometry.")
 } else {
     let app = NSApplication.shared
     let delegate = AppDelegate()

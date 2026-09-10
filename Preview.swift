@@ -23,10 +23,14 @@ func renderQuotaPreviews(to directory: URL) throws {
         for (name, baseState) in states {
             var state = baseState
             state.benefitReset = now.addingTimeInterval(86400 * 6 + 3600 * 20)
+            state.benefitResetConfidence = 0.29
+            state.benefitResetReason = usesEnglish ? "No official notice; estimated from recent reset intervals and capacity pressure." : "无明确预告；基于近期重置间隔、窄范围补发及容量压力推测。"
             let view = HoverSurface(frame: NSRect(x: 0, y: 0, width: 280, height: 216))
             view.expanded = true
             view.update(state: state, target: nil, refresh: nil, pin: nil, more: nil, hide: nil)
             view.setFrameSize(NSSize(width: 280, height: view.card.contentHeight))
+            let host = NSView(frame: view.frame)
+            host.addSubview(view)
             view.appearance = appearance
             view.layoutSubtreeIfNeeded()
             for subview in view.card.subviews {
@@ -37,6 +41,16 @@ func renderQuotaPreviews(to directory: URL) throws {
                 }
             }
             precondition(view.card.refreshButton.isEnabled != state.refreshing)
+            let eye = view.card.reasonButton!
+            for point in [NSPoint(x: 1, y: 1), NSPoint(x: 12, y: 12), NSPoint(x: 23, y: 23)] {
+                precondition(view.card.button(at: eye.convert(point, to: view.card)) === eye, "Eye button must capture its full area")
+                precondition(view.hitTest(eye.convert(point, to: host)) === eye, "Eye button must not start dragging")
+            }
+            var opened = false
+            view.card.onShowReason = { _ in opened = true }
+            eye.performClick(nil)
+            precondition(opened, "Eye click must open the reason")
+            precondition(!view.card.subviews.compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains(state.benefitResetReason!) }, "Reason must stay hidden on the card")
             let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width) * 2, pixelsHigh: Int(view.bounds.height) * 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
             rep.size = view.bounds.size
             appearance.performAsCurrentDrawingAppearance { view.cacheDisplay(in: view.bounds, to: rep) }
@@ -55,5 +69,10 @@ func renderQuotaPreviews(to directory: URL) throws {
             checked += 1
         }
     }
+    let longReason = String(repeating: "A detailed forecast reason. 预测理由详情。\n", count: 100)
+    let reasonController = ForecastReasonController(reason: longReason)
+    precondition(reasonController.reasonText.string == longReason)
+    precondition(reasonController.preferredContentSize.height <= 308)
+    precondition(reasonController.reasonText.enclosingScrollView?.hasVerticalScroller == true)
     print("Rendered \(checked) previews; bounds, single-line text widths and refresh-button states passed.")
 }

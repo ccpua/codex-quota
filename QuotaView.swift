@@ -24,6 +24,10 @@ func benefitResetStatus(_ date: Date, now: Date = Date()) -> String {
     date <= now ? tr("等待预测更新", "Awaiting new forecast") : resetCountdown(date, now: now)
 }
 
+func benefitConfidenceLabel(_ confidence: Double) -> String {
+    String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), confidence)
+}
+
 func validatedRefreshInterval(_ value: Double) -> Double {
     value.isFinite && value >= 10 && value <= 3600 ? value : 60
 }
@@ -39,6 +43,8 @@ struct QuotaDisplayState {
     var refreshing = false
     var pinned = true
     var benefitReset: Date?
+    var benefitResetConfidence: Double?
+    var benefitResetReason: String?
     var benefitResetLoading = false
     var benefitResetUnavailable = false
     var remaining: Int? { windows.map({ $0.remaining }).min() }
@@ -150,13 +156,16 @@ final class QuotaCardView: NSView {
     private(set) var pinButton: NSButton!
     private(set) var moreButton: NSButton!
     private(set) var hideButton: NSButton!
+    private(set) var reasonButton: NSButton?
+    var onShowReason: ((NSButton) -> Void)?
     var onDrag: ((NSEvent) -> Void)?
 
     init(state: QuotaDisplayState, target: AnyObject?, refresh: Selector?, pin: Selector?, more: Selector?, hide: Selector?) {
         self.state = state
         let blockCount = max(1, state.windows.count)
         let errorHeight: CGFloat = state.error == nil ? 0 : 44
-        contentHeight = 52 + CGFloat(blockCount) * 122 + errorHeight + 50 + 44
+        let benefitHeight: CGFloat = 58
+        contentHeight = 52 + CGFloat(blockCount) * 122 + errorHeight + benefitHeight + 44
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: contentHeight))
         setAccessibilityElement(false)
         let brand = text("CODEX", x: 20, y: 17, width: 110, size: 10, color: primaryInk, weight: .semibold)
@@ -205,14 +214,26 @@ final class QuotaCardView: NSView {
         if let reset = state.benefitReset {
             let date = text(benefitResetDateLabel(reset), x: 178, y: benefitY + 10, width: 82, size: 10, color: primaryInk)
             date.alignment = .right
-            let status = text(benefitResetStatus(reset), x: 20, y: benefitY + 27, width: 240, size: 10, color: reset > Date() ? quotaAccent(80) : secondaryInk)
+            var reasonX: CGFloat = 20
+            if let confidence = state.benefitResetConfidence {
+                let label = text(tr("置信度", "Confidence") + "  " + benefitConfidenceLabel(confidence), x: 20, y: benefitY + 28, width: 94, size: 10, color: secondaryInk, weight: .medium)
+                let width = ceil((label.stringValue as NSString).size(withAttributes: [.font: label.font!]).width) + 4
+                label.setFrameSize(NSSize(width: width, height: 18))
+                reasonX = label.frame.maxX + 2
+            }
+            if state.benefitResetReason != nil {
+                reasonButton = icon("eye", label: tr("查看预测理由", "View forecast reason"), x: reasonX, y: benefitY + 24, target: self, action: #selector(showReason(_:)))
+                reasonButton?.setFrameSize(NSSize(width: 24, height: 24))
+            }
+            let hasDetails = state.benefitResetConfidence != nil || state.benefitResetReason != nil
+            let status = text(benefitResetStatus(reset), x: hasDetails ? 144 : 20, y: benefitY + 28, width: hasDetails ? 116 : 240, size: 10, color: reset > Date() ? quotaAccent(80) : secondaryInk)
             status.alignment = .right
             status.toolTip = displayFormatter("yyyy-MM-dd HH:mm:ss zzz").string(from: reset) + " · " + displayTimeZone.identifier
         } else {
             let message = state.benefitResetLoading ? tr("正在获取预测…", "Loading forecast…") : state.benefitResetUnavailable ? tr("预测暂不可用", "Forecast unavailable") : tr("暂未提供预测", "No forecast available")
             text(message, x: 20, y: benefitY + 27, width: 240, size: 10, color: secondaryInk)
         }
-        let footerY = benefitY + 50
+        let footerY = benefitY + benefitHeight
         let separator = NSBox(frame: NSRect(x: 20, y: footerY, width: 240, height: 1)); separator.boxType = .separator; addSubview(separator)
         text(state.freshness, x: 20, y: footerY + 13, width: 202, size: 10, color: secondaryInk)
         refreshButton = icon("arrow.clockwise", label: tr("立即刷新", "Refresh now") + " · " + refreshIntervalLabel, x: 235, y: footerY + 6, target: target, action: refresh)
@@ -220,6 +241,7 @@ final class QuotaCardView: NSView {
 
     }
     required init?(coder: NSCoder) { fatalError() }
+    @objc private func showReason(_ sender: NSButton) { onShowReason?(sender) }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) { onDrag?(event) }
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -258,4 +280,42 @@ final class QuotaCardView: NSView {
         addSubview(button)
         return button
     }
+}
+
+/// The complete reason stays selectable and scrollable, even for long forecasts.
+final class ForecastReasonController: NSViewController {
+    let reasonText = NSTextView()
+    init(reason: String) {
+        super.init(nibName: nil, bundle: nil)
+        let width: CGFloat = 288
+        let title = NSTextField(labelWithString: tr("预测理由", "Forecast reason"))
+        title.font = .systemFont(ofSize: 12, weight: .semibold)
+        title.frame = NSRect(x: 18, y: 0, width: width - 36, height: 20)
+        reasonText.isEditable = false
+        reasonText.isSelectable = true
+        reasonText.drawsBackground = false
+        reasonText.font = .systemFont(ofSize: 12)
+        reasonText.textColor = .labelColor
+        reasonText.textContainerInset = .zero
+        reasonText.textContainer?.lineFragmentPadding = 0
+        reasonText.textContainer?.containerSize = NSSize(width: width - 48, height: .greatestFiniteMagnitude)
+        reasonText.textContainer?.widthTracksTextView = false
+        reasonText.string = reason
+        reasonText.layoutManager?.ensureLayout(for: reasonText.textContainer!)
+        let textHeight = ceil(reasonText.layoutManager!.usedRect(for: reasonText.textContainer!).height) + 4
+        let visibleHeight = min(240, max(36, textHeight))
+        let height = visibleHeight + 68
+        view = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        title.frame.origin.y = height - 38
+        view.addSubview(title)
+        let scroll = NSScrollView(frame: NSRect(x: 18, y: 18, width: width - 36, height: visibleHeight))
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = textHeight > visibleHeight
+        scroll.autohidesScrollers = true
+        reasonText.frame = NSRect(x: 0, y: 0, width: width - 36, height: max(textHeight, visibleHeight))
+        scroll.documentView = reasonText
+        view.addSubview(scroll)
+        preferredContentSize = view.frame.size
+    }
+    required init?(coder: NSCoder) { fatalError() }
 }
