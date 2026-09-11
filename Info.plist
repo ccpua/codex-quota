@@ -5,8 +5,8 @@
 <key>CFBundleIdentifier</key><string>local.ming.codexquota</string>
 <key>CFBundleName</key><string>Codex Quota</string>
 <key>CFBundleDisplayName</key><string>Codex Quota</string>
-<key>CFBundleVersion</key><string>10</string>
-<key>CFBundleShortVersionString</key><string>1.7.2</string>
+<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleShortVersionString</key><string>1.0.2</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleIconFile</key><string>AppIcon.png</string>
 <key>CFBundleIconFiles</key><array><string>AppIcon.png</string></array>

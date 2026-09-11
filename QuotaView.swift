@@ -25,7 +25,11 @@ func benefitResetStatus(_ date: Date, now: Date = Date()) -> String {
 }
 
 func benefitConfidenceLabel(_ confidence: Double) -> String {
-    String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), confidence)
+    String(format: "%.0f%%", locale: Locale(identifier: "en_US_POSIX"), confidence * 100)
+}
+
+func appVersionLabel(_ version: String) -> String {
+    version.hasPrefix("v") ? version : "v\(version)"
 }
 
 func validatedRefreshInterval(_ value: Double) -> Double {
@@ -47,10 +51,14 @@ struct QuotaDisplayState {
     var benefitResetReason: String?
     var benefitResetLoading = false
     var benefitResetUnavailable = false
+    var availableVersion: String?
+    var checkingForUpdate = false
+    var installingUpdate = false
     var remaining: Int? { windows.map({ $0.remaining }).min() }
     var menuTitle: String {
-        guard let remaining = remaining else { return refreshing ? "Codex ···" : "Codex —" }
-        return "Codex \(remaining)%\(error == nil ? "" : " ⚠︎")"
+        let update = availableVersion == nil ? "" : " ↑"
+        guard let remaining = remaining else { return (refreshing ? "Codex ···" : "Codex —") + update }
+        return "Codex \(remaining)%\(error == nil ? "" : " ⚠︎")" + update
     }
     var freshness: String {
         if refreshing { return tr("正在更新", "Updating") }
@@ -157,15 +165,19 @@ final class QuotaCardView: NSView {
     private(set) var moreButton: NSButton!
     private(set) var hideButton: NSButton!
     private(set) var reasonButton: NSButton?
+    private(set) var updateButton: NSButton?
     var onShowReason: ((NSButton) -> Void)?
     var onDrag: ((NSEvent) -> Void)?
 
-    init(state: QuotaDisplayState, target: AnyObject?, refresh: Selector?, pin: Selector?, more: Selector?, hide: Selector?) {
+    init(state: QuotaDisplayState, target: AnyObject?, refresh: Selector?, pin: Selector?, more: Selector?, hide: Selector?, update: Selector? = nil) {
         self.state = state
         let blockCount = max(1, state.windows.count)
         let errorHeight: CGFloat = state.error == nil ? 0 : 44
-        let benefitHeight: CGFloat = 58
-        contentHeight = 52 + CGFloat(blockCount) * 122 + errorHeight + benefitHeight + 44
+        // The 18pt label frames include bottom font padding; center the visible
+        // glyphs between the separators rather than centering those frames.
+        let benefitHeight: CGFloat = 57
+        let updateHeight: CGFloat = state.availableVersion == nil ? 0 : 26
+        contentHeight = 52 + CGFloat(blockCount) * 122 + errorHeight + benefitHeight + updateHeight + 44
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: contentHeight))
         setAccessibilityElement(false)
         let brand = text("CODEX", x: 20, y: 17, width: 110, size: 10, color: primaryInk, weight: .semibold)
@@ -241,6 +253,23 @@ final class QuotaCardView: NSView {
         text(state.freshness, x: 20, y: footerY + 13, width: 202, size: 10, color: secondaryInk)
         refreshButton = icon("arrow.clockwise", label: tr("立即刷新", "Refresh now") + " · " + refreshIntervalLabel, x: 235, y: footerY + 6, target: target, action: refresh)
         refreshButton.isEnabled = !state.refreshing
+
+        let updateY = footerY + 36
+        if let version = state.availableVersion {
+            let displayVersion = appVersionLabel(version)
+            let title = tr("发现新版本 \(displayVersion)", "Update \(displayVersion) available")
+            let label = text(title, x: 0, y: updateY + 3, width: 200, size: 10, color: quotaAccent(80), weight: .semibold)
+            let labelWidth = ceil((title as NSString).size(withAttributes: [.font: label.font!]).width) + 10
+            label.frame = NSRect(x: 20, y: updateY + 3, width: labelWidth, height: 18)
+            // Match the visible text center, excluding the label's bottom font padding.
+            // Overlap only the label's trailing padding so the visible icon sits
+            // close to the version while retaining its full 24pt hit area.
+            updateButton = icon("arrow.down.circle.fill", label: tr("点击下载并安装更新", "Download and install the update"), x: label.frame.maxX - 8, y: label.frame.minY - 6, target: target, action: update)
+            updateButton?.setFrameSize(NSSize(width: 24, height: 24))
+            updateButton?.image = NSImage(systemSymbolName: "arrow.down.circle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 12, weight: .medium))
+            updateButton?.contentTintColor = quotaAccent(80)
+            updateButton?.isEnabled = !state.installingUpdate
+        }
 
     }
     required init?(coder: NSCoder) { fatalError() }

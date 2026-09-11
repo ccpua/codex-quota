@@ -23,7 +23,7 @@ If a DMG is not available, click **Code → Download ZIP** on this repository's 
 
 This version has not been notarized by Apple. If macOS blocks the first launch because it cannot verify the developer, confirm that you downloaded it from this repository, then go to **System Settings → Privacy & Security → Open Anyway**. [Apple's instructions](https://support.apple.com/en-us/102445)
 
-Hover over the capsule to see details, or drag it to move. Right-click to change the language, appearance, or refresh interval, or to quit.
+Hover over the capsule to see details, or drag it to move. Right-click to check for updates, change the language, appearance, or refresh interval, or quit.
 
 <details>
 <summary>Optional: install from source</summary>

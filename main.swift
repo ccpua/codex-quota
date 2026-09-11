@@ -1,6 +1,6 @@
 import AppKit
 
-private let benefitResetEndpoint = URL(string: "https://config-center-1412625299.cos.ap-guangzhou.myqcloud.com/config/test/codex_reset")!
+private let benefitResetEndpoint = URL(string: "https://assets-dev-1412625299.cos.ap-guangzhou.myqcloud.com/codex-quota/config/codex_reset")!
 
 struct BenefitResetPrediction {
     let date: Date
@@ -143,7 +143,7 @@ final class QuotaClient {
             }
         }
         do { try p.run() } catch { fail("无法启动 Codex：\(error.localizedDescription)"); return }
-        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": "1.7.2"]]])
+        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": currentAppVersion]]])
         queue.asyncAfter(deadline: .now() + 25) { [weak self] in
             guard let self = self, self.generation == currentGeneration, !self.ready else { return }
             self.fail("连接超时，请检查网络后重试。")
@@ -192,7 +192,9 @@ final class BenefitResetClient {
 
     func refresh() {
         task?.cancel()
-        var request = URLRequest(url: benefitResetEndpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
+        var components = URLComponents(url: benefitResetEndpoint, resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "refresh", value: String(Int(Date().timeIntervalSince1970 / 600)))]
+        var request = URLRequest(url: components.url!, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 12)
         request.setValue("text/plain", forHTTPHeaderField: "Accept")
         task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             let result: Result<BenefitResetPrediction, Error>
@@ -216,10 +218,12 @@ final class BenefitResetClient {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     let client = QuotaClient()
     let benefitClient = BenefitResetClient()
+    let updateClient = UpdateClient()
     var statusItem: NSStatusItem!
     var panel: NSPanel!
     var timer: Timer?
     var benefitTimer: Timer?
+    var updateTimer: Timer?
     var terminationSignal: DispatchSourceSignal?
     var state = QuotaDisplayState(refreshing: true, benefitResetLoading: true)
     var surface: HoverSurface!
@@ -332,6 +336,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         benefitTimer = predictionTimer
         RunLoop.main.add(predictionTimer, forMode: .common)
+        performUpdateCheck(showResult: false)
+        let hourlyUpdateTimer = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
+            self?.performUpdateCheck(showResult: false)
+        }
+        updateTimer = hourlyUpdateTimer
+        RunLoop.main.add(hourlyUpdateTimer, forMode: .common)
         scheduleRefresh()
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(refresh), name: NSWorkspace.didWakeNotification, object: nil)
         signal(SIGTERM, SIG_IGN)
@@ -345,7 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return false
     }
     func applicationWillTerminate(_ notification: Notification) {
-        timer?.invalidate(); benefitTimer?.invalidate(); transitionTimer?.invalidate(); client.stop(); benefitClient.stop(); terminationSignal?.cancel()
+        timer?.invalidate(); benefitTimer?.invalidate(); updateTimer?.invalidate(); transitionTimer?.invalidate(); client.stop(); benefitClient.stop(); updateClient.stop(); terminationSignal?.cancel()
         hoverWork?.cancel()
         if !smokeTest { savePosition() }
     }
@@ -409,6 +419,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         menuOpen = true; hoverWork?.cancel()
         makeMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
         menuOpen = false; handleHover(panel.frame.contains(NSEvent.mouseLocation))
+    }
+    @objc func checkForUpdates() { performUpdateCheck(showResult: true) }
+    func performUpdateCheck(showResult: Bool) {
+        guard !state.checkingForUpdate && !state.installingUpdate else { return }
+        state.checkingForUpdate = true
+        render()
+        updateClient.checkVersion { [weak self] result in
+            guard let self else { return }
+            self.state.checkingForUpdate = false
+            switch result {
+            case .success(let remote):
+                let current = AppVersion(currentAppVersion)!
+                self.state.availableVersion = remote > current ? remote.string : nil
+                self.render()
+                if showResult {
+                    if remote > current { self.offerUpdate(remote) }
+                    else { self.showUpdateMessage(title: tr("已是最新版本", "You're up to date"), message: tr("当前版本为 \(appVersionLabel(currentAppVersion))。", "Codex Quota \(appVersionLabel(currentAppVersion)) is the latest version.")) }
+                }
+            case .failure(let error):
+                self.render()
+                if showResult { self.showUpdateMessage(title: tr("无法检查更新", "Unable to Check for Updates"), message: error.localizedDescription) }
+            }
+        }
+    }
+    func offerUpdate(_ version: AppVersion) {
+        let alert = NSAlert()
+        alert.messageText = tr("发现新版本 \(appVersionLabel(version.string))", "Codex Quota \(appVersionLabel(version.string)) is available")
+        alert.informativeText = tr("当前版本为 \(appVersionLabel(currentAppVersion))。是否下载并安装更新？", "You are using \(appVersionLabel(currentAppVersion)). Download and install the update now?")
+        alert.addButton(withTitle: tr("更新", "Update"))
+        alert.addButton(withTitle: tr("稍后", "Later"))
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn { downloadAndInstall(version) }
+    }
+    func downloadAndInstall(_ version: AppVersion) {
+        guard !state.installingUpdate else { return }
+        state.installingUpdate = true
+        render()
+        updateClient.download(version: version) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.state.installingUpdate = false
+                self.render()
+                self.showUpdateMessage(title: tr("更新失败", "Update Failed"), message: error.localizedDescription)
+            case .success(let dmg):
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        let prepared = try UpdateInstaller.prepare(dmg: dmg, version: version)
+                        DispatchQueue.main.async {
+                            do {
+                                try UpdateInstaller.launchInstaller(prepared)
+                                NSApp.terminate(nil)
+                            } catch {
+                                try? FileManager.default.removeItem(at: prepared.staged)
+                                self.finishUpdateFailure(error)
+                            }
+                        }
+                    } catch {
+                        DispatchQueue.main.async { self.finishUpdateFailure(error) }
+                    }
+                }
+            }
+        }
+    }
+    func finishUpdateFailure(_ error: Error) {
+        state.installingUpdate = false
+        render()
+        showUpdateMessage(title: tr("更新失败", "Update Failed"), message: error.localizedDescription)
+    }
+    func showUpdateMessage(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: tr("好", "OK"))
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
     func showForecastReason(_ sender: NSButton) {
         if let popover = reasonPopover { popover.performClose(sender); return }
@@ -503,6 +589,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         menu.autoenablesItems = false
         menu.addItem(.separator())
+        let updateTitle: String
+        if state.installingUpdate { updateTitle = tr("正在安装更新…", "Installing Update…") }
+        else if state.checkingForUpdate { updateTitle = tr("正在检查更新…", "Checking for Updates…") }
+        else if let version = state.availableVersion { updateTitle = tr("更新到 \(appVersionLabel(version))…", "Update to \(appVersionLabel(version))…") }
+        else { updateTitle = tr("检查更新…", "Check for Updates…") }
+        let updateItem = NSMenuItem(title: updateTitle, action: #selector(checkForUpdates), keyEquivalent: "")
+        updateItem.target = self
+        updateItem.isEnabled = !state.checkingForUpdate && !state.installingUpdate
+        menu.addItem(updateItem)
+        menu.addItem(.separator())
         addDisplayPreferences(to: menu)
         let interval = NSMenuItem(title: tr("刷新间隔…", "Refresh interval…") + " (\(Int(refreshIntervalSeconds))s)", action: #selector(configureRefreshInterval), keyEquivalent: "")
         interval.target = self
@@ -594,13 +690,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let details = state.windows.map { "\($0.name) " + tr("剩余", "remaining") + " \($0.remaining)%" }.joined(separator: " · ")
         let benefit = state.benefitReset.map { "\n" + tr("下次福利重置预测", "Next bonus reset (est.)") + ": \(benefitResetDateLabel($0)) (\(benefitResetStatus($0)))" } ?? ""
         let confidence = state.benefitResetConfidence.map { "\n" + tr("置信度", "Confidence") + ": " + benefitConfidenceLabel($0) } ?? ""
+        let update = state.availableVersion.map { "\n" + tr("新版本", "Update available") + ": " + appVersionLabel($0) } ?? ""
         let warning = state.error.map { usesEnglish ? "\nQuota unavailable. Please refresh." : "\n\($0)" } ?? ""
-        statusItem.button?.toolTip = details + benefit + confidence + warning + "\n" + state.freshness + "\n" + displayTimeZone.identifier + "\n" + tr("左键：显示/隐藏小窗；右键：菜单", "Left click: show/hide panel; right click: menu")
+        statusItem.button?.toolTip = details + benefit + confidence + update + warning + "\n" + state.freshness + "\n" + displayTimeZone.identifier + "\n" + tr("左键：显示/隐藏小窗；右键：菜单", "Left click: show/hide panel; right click: menu")
         statusItem.button?.setAccessibilityLabel("Codex Quota: " + (details.isEmpty ? tr("暂无数据", "No data") : details))
         // Keep the anchor view alive while the user is reading the popover.
         // Incoming quota/forecast data is rendered after it closes.
         guard reasonPopover == nil else { return }
-        surface.update(state: state, target: self, refresh: #selector(refresh), pin: #selector(togglePinned), more: #selector(showMenu(_:)), hide: #selector(togglePanel))
+        surface.update(state: state, target: self, refresh: #selector(refresh), pin: #selector(togglePinned), more: #selector(showMenu(_:)), hide: #selector(togglePanel), update: #selector(checkForUpdates))
         surface.card.onShowReason = { [weak self] sender in self?.showForecastReason(sender) }
         setExpanded(expanded)
     }
@@ -621,6 +718,12 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     precondition(validatedRefreshInterval(3601) == 60)
     precondition(validatedRefreshInterval(10) == 10)
     precondition(validatedRefreshInterval(3600) == 3600)
+    precondition(AppVersion("1.0.1")! > AppVersion("1.0.0")!)
+    precondition(AppVersion("1.10.0")! > AppVersion("1.9.9")!)
+    precondition(AppVersion("1.0") == nil && AppVersion("latest") == nil)
+    precondition(updateDownloadURL(for: "1.2.3")?.lastPathComponent == "Codex-Quota-1.2.3-arm64.dmg")
+    precondition(updateDownloadURL(for: "../bad") == nil)
+    precondition(currentAppVersion == "1.0.2")
     let r = quotaWindows(["rateLimitsByLimitId": ["codex": ["primary": window(63, 10080), "secondary": NSNull()]]])
     precondition(r.count == 1 && r[0].remaining == 37 && r[0].name == "本周额度")
     precondition(quotaWindows([:]).isEmpty)
@@ -639,7 +742,11 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     precondition(predictedParts.year == 2026 && predictedParts.month == 9 && predictedParts.day == 8 && predictedParts.hour == 10 && predictedParts.minute == 30)
     precondition(predicted.confidence == 0.29)
     precondition(predicted.reason == "无明确预告；基于近期重置间隔推测。")
-    precondition(benefitConfidenceLabel(predicted.confidence!) == "0.29")
+    precondition(benefitConfidenceLabel(predicted.confidence!) == "29%")
+    precondition(benefitConfidenceLabel(0) == "0%")
+    precondition(benefitConfidenceLabel(1) == "100%")
+    precondition(appVersionLabel("1.0.1") == "v1.0.1")
+    precondition(appVersionLabel("v1.0.1") == "v1.0.1")
     let legacyPrediction = parseBenefitReset("2026-09-08 10:30:00\n")!
     precondition(legacyPrediction.confidence == nil && legacyPrediction.reason == nil)
     precondition(parseBenefitReset("2026-09-08 10:30:00\r\n0.29\r\nCRLF")?.reason == "CRLF")
@@ -650,6 +757,7 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     let winter = parseBenefitReset("2026-01-08 10:30:00")!
     precondition(displayFormatter("yyyy-MM-dd HH:mm", zone: TimeZone(identifier: "America/Los_Angeles")!).string(from: winter.date) == "2026-01-07 18:30")
     precondition(QuotaDisplayState(windows: both).menuTitle == "Codex 37%")
+    precondition(QuotaDisplayState(windows: both, availableVersion: "1.0.1").menuTitle == "Codex 37% ↑")
     precondition(QuotaDisplayState(windows: both, error: "离线").menuTitle == "Codex 37% ⚠︎")
     precondition(QuotaDisplayState(error: "离线").menuTitle == "Codex —")
     let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -680,7 +788,7 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     UserDefaults.standard.setVolatileDomain(testArguments, forName: UserDefaults.argumentDomain)
     precondition(displayTheme == .system && configuredAppearance == nil)
     UserDefaults.standard.setVolatileDomain(originalArguments, forName: UserDefaults.argumentDomain)
-    print("Passed: quotas, prediction fields, legacy config, language, appearance modes, Beijing parsing, time zones, DST, countdowns and screen geometry.")
+    print("Passed: quotas, prediction fields, versions, update URLs, language, appearance modes, Beijing parsing, time zones, DST, countdowns and screen geometry.")
 } else {
     let app = NSApplication.shared
     let delegate = AppDelegate()

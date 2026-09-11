@@ -15,6 +15,7 @@ func renderQuotaPreviews(to directory: URL) throws {
         ("loading", QuotaDisplayState(refreshing: true)),
         ("offline", QuotaDisplayState(windows: [window(64)], lastUpdated: now.addingTimeInterval(-180), error: "查询超时，保留上次数据；稍后自动重试。")),
         ("login", QuotaDisplayState(error: "请在 Codex 中登录后，再点刷新。")),
+        ("update", QuotaDisplayState(windows: [window(64)], lastUpdated: now, availableVersion: "1.0.1")),
         ("refreshing", QuotaDisplayState(windows: [window(64)], lastUpdated: now, refreshing: true))
     ]
     var checked = 0
@@ -41,6 +42,14 @@ func renderQuotaPreviews(to directory: URL) throws {
                 }
             }
             precondition(view.card.refreshButton.isEnabled != state.refreshing)
+            precondition((view.card.updateButton != nil) == (state.availableVersion != nil))
+            if view.card.updateButton != nil {
+                let versionLabel = view.card.subviews.compactMap { $0 as? NSTextField }.first { $0.stringValue.contains("v1.0.1") }!
+                precondition(versionLabel.frame.minX == 20, "Update row must align with the left content edge")
+                let freshness = view.card.subviews.compactMap { $0 as? NSTextField }.first { $0.stringValue == state.freshness }!
+                let updateGap = versionLabel.frame.minY - freshness.frame.maxY
+                precondition(updateGap > 0 && updateGap <= 8, "Update row must sit closely below freshness")
+            }
             let eye = view.card.reasonButton!
             for point in [NSPoint(x: 1, y: 1), NSPoint(x: 12, y: 12), NSPoint(x: 23, y: 23)] {
                 precondition(view.card.button(at: eye.convert(point, to: view.card)) === eye, "Eye button must capture its full area")

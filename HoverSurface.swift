@@ -75,9 +75,9 @@ final class HoverSurface: NSView {
         if let capsule = capsule { capsule.setFrameOrigin(NSPoint(x: anchorRight ? bounds.width - 96 : 0, y: 0)) }
         needsDisplay = true
     }
-    func update(state: QuotaDisplayState, target: AnyObject?, refresh: Selector?, pin: Selector?, more: Selector?, hide: Selector?) {
+    func update(state: QuotaDisplayState, target: AnyObject?, refresh: Selector?, pin: Selector?, more: Selector?, hide: Selector?, update: Selector? = nil) {
         card?.removeFromSuperview(); capsule?.removeFromSuperview()
-        card = QuotaCardView(state: state, target: target, refresh: refresh, pin: pin, more: more, hide: hide)
+        card = QuotaCardView(state: state, target: target, refresh: refresh, pin: pin, more: more, hide: hide, update: update)
         capsule = QuotaCapsuleView(state: state)
         card.onDrag = { [weak self] event in self?.beginDrag(with: event) }
         capsule.onDrag = { [weak self] event in self?.beginDrag(with: event) }
