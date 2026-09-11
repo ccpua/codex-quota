@@ -209,29 +209,32 @@ final class QuotaCardView: NSView {
             message.maximumNumberOfLines = 2; message.lineBreakMode = .byWordWrapping; message.toolTip = message.stringValue
         }
         let benefitY = errorY + (state.error == nil ? 0 : 44)
+        // Center the visible two-line text block, allowing for NSTextField's font insets.
+        let predictionTitleY = benefitY + 13
+        let predictionDetailsY = predictionTitleY + 18
         let benefitSeparator = NSBox(frame: NSRect(x: 20, y: benefitY, width: 240, height: 1)); benefitSeparator.boxType = .separator; addSubview(benefitSeparator)
-        text(tr("下次福利重置（预测）", "Next bonus reset (est.)"), x: 20, y: benefitY + 10, width: 150, size: 10, color: secondaryInk, weight: .medium)
+        text(tr("下次福利重置（预测）", "Next bonus reset (est.)"), x: 20, y: predictionTitleY, width: 150, size: 10, color: secondaryInk, weight: .medium)
         if let reset = state.benefitReset {
-            let date = text(benefitResetDateLabel(reset), x: 178, y: benefitY + 10, width: 82, size: 10, color: primaryInk)
+            let date = text(benefitResetDateLabel(reset), x: 178, y: predictionTitleY, width: 82, size: 10, color: primaryInk)
             date.alignment = .right
             var reasonX: CGFloat = 20
             if let confidence = state.benefitResetConfidence {
-                let label = text(tr("置信度", "Confidence") + "  " + benefitConfidenceLabel(confidence), x: 20, y: benefitY + 28, width: 94, size: 10, color: secondaryInk, weight: .medium)
+                let label = text(tr("置信度", "Confidence") + "  " + benefitConfidenceLabel(confidence), x: 20, y: predictionDetailsY, width: 94, size: 10, color: secondaryInk, weight: .medium)
                 let width = ceil((label.stringValue as NSString).size(withAttributes: [.font: label.font!]).width) + 4
                 label.setFrameSize(NSSize(width: width, height: 18))
                 reasonX = label.frame.maxX + 2
             }
             if state.benefitResetReason != nil {
-                reasonButton = icon("eye", label: tr("查看预测理由", "View forecast reason"), x: reasonX, y: benefitY + 24, target: self, action: #selector(showReason(_:)))
+                reasonButton = icon("eye", label: tr("查看预测理由", "View forecast reason"), x: reasonX, y: predictionDetailsY - 6, target: self, action: #selector(showReason(_:)))
                 reasonButton?.setFrameSize(NSSize(width: 24, height: 24))
             }
             let hasDetails = state.benefitResetConfidence != nil || state.benefitResetReason != nil
-            let status = text(benefitResetStatus(reset), x: hasDetails ? 144 : 20, y: benefitY + 28, width: hasDetails ? 116 : 240, size: 10, color: reset > Date() ? quotaAccent(80) : secondaryInk)
+            let status = text(benefitResetStatus(reset), x: hasDetails ? 144 : 20, y: predictionDetailsY, width: hasDetails ? 116 : 240, size: 10, color: reset > Date() ? quotaAccent(80) : secondaryInk)
             status.alignment = .right
             status.toolTip = displayFormatter("yyyy-MM-dd HH:mm:ss zzz").string(from: reset) + " · " + displayTimeZone.identifier
         } else {
             let message = state.benefitResetLoading ? tr("正在获取预测…", "Loading forecast…") : state.benefitResetUnavailable ? tr("预测暂不可用", "Forecast unavailable") : tr("暂未提供预测", "No forecast available")
-            text(message, x: 20, y: benefitY + 27, width: 240, size: 10, color: secondaryInk)
+            text(message, x: 20, y: predictionDetailsY, width: 240, size: 10, color: secondaryInk)
         }
         let footerY = benefitY + benefitHeight
         let separator = NSBox(frame: NSRect(x: 20, y: footerY, width: 240, height: 1)); separator.boxType = .separator; addSubview(separator)

@@ -143,7 +143,7 @@ final class QuotaClient {
             }
         }
         do { try p.run() } catch { fail("无法启动 Codex：\(error.localizedDescription)"); return }
-        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": "1.7.1"]]])
+        send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": "1.7.2"]]])
         queue.asyncAfter(deadline: .now() + 25) { [weak self] in
             guard let self = self, self.generation == currentGeneration, !self.ready else { return }
             self.fail("连接超时，请检查网络后重试。")

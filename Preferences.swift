@@ -15,7 +15,8 @@ var configuredAppearance: NSAppearance? {
     }
 }
 
-var usesEnglish: Bool { UserDefaults.standard.string(forKey: "displayLanguage") == "en" }
+// A missing preference is a first launch, which defaults to English.
+var usesEnglish: Bool { UserDefaults.standard.string(forKey: "displayLanguage") ?? "en" == "en" }
 func tr(_ chinese: String, _ english: String) -> String { usesEnglish ? english : chinese }
 var displayTimeZone: TimeZone {
     UserDefaults.standard.string(forKey: "displayTimeZone").flatMap(TimeZone.init(identifier:)) ?? .current
