@@ -159,19 +159,61 @@ final class QuotaProgressView: NSView {
     }
 }
 
+private enum CodeActivityKind {
+    case added, modified, deleted
+
+    /// All three icons share an 11pt canvas and rounded, consistent strokes.
+    func draw(in rect: NSRect, color: NSColor) {
+        func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+            NSPoint(x: rect.minX + x, y: rect.minY + y)
+        }
+        let path = NSBezierPath()
+        path.lineWidth = 1.1
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        switch self {
+        case .added:
+            path.appendRoundedRect(rect.insetBy(dx: 0.6, dy: 0.6), xRadius: 2.2, yRadius: 2.2)
+            path.move(to: point(3, 5.5)); path.line(to: point(8, 5.5))
+            path.move(to: point(5.5, 3)); path.line(to: point(5.5, 8))
+        case .modified:
+            path.move(to: point(1, 10)); path.line(to: point(1.7, 6.8))
+            path.line(to: point(7.5, 1))
+            path.curve(to: point(8.9, 1), controlPoint1: point(7.9, 0.6), controlPoint2: point(8.5, 0.6))
+            path.line(to: point(10, 2.1))
+            path.curve(to: point(10, 3.5), controlPoint1: point(10.4, 2.5), controlPoint2: point(10.4, 3.1))
+            path.line(to: point(4.2, 9.3)); path.close()
+            path.move(to: point(6.4, 2.1)); path.line(to: point(8.9, 4.6))
+        case .deleted:
+            path.move(to: point(1, 2.5)); path.line(to: point(10, 2.5))
+            path.move(to: point(4, 2.5)); path.line(to: point(4, 0.8))
+            path.line(to: point(7, 0.8)); path.line(to: point(7, 2.5))
+            path.move(to: point(2, 2.5)); path.line(to: point(2.5, 9.2))
+            path.curve(to: point(3.5, 10.2), controlPoint1: point(2.5, 9.9), controlPoint2: point(2.8, 10.2))
+            path.line(to: point(7.5, 10.2))
+            path.curve(to: point(8.5, 9.2), controlPoint1: point(8.2, 10.2), controlPoint2: point(8.5, 9.9))
+            path.line(to: point(9, 2.5))
+            path.move(to: point(4.3, 4.6)); path.line(to: point(4.5, 8))
+            path.move(to: point(6.7, 4.6)); path.line(to: point(6.5, 8))
+        }
+        color.setStroke()
+        path.stroke()
+    }
+}
+
 private final class CodeActivityMetricView: NSView {
     private let title: String
     private let value: Int?
     private let accent: NSColor
-    private let mark: String
+    private let kind: CodeActivityKind
 
     override var isFlipped: Bool { true }
 
-    init(frame: NSRect, title: String, value: Int?, accent: NSColor, mark: String, status: String?) {
+    init(frame: NSRect, title: String, value: Int?, accent: NSColor, kind: CodeActivityKind, status: String?) {
         self.title = title
         self.value = value
         self.accent = accent
-        self.mark = mark
+        self.kind = kind
         super.init(frame: frame)
         let exactValue = value.map(String.init) ?? "—"
         toolTip = [title + " " + exactValue, status].compactMap { $0 }.joined(separator: " · ")
@@ -206,10 +248,11 @@ private final class CodeActivityMetricView: NSView {
         accent.withAlphaComponent(dark ? 0.40 : 0.30).setStroke()
         card.lineWidth = 0.8; card.stroke()
 
-        let markFont = NSFont.systemFont(ofSize: 10, weight: .bold)
-        (mark as NSString).draw(at: NSPoint(x: 8, y: 7), withAttributes: [.font: markFont, .foregroundColor: accent])
         let titleFont = NSFont.systemFont(ofSize: 8.5, weight: .medium)
-        (title as NSString).draw(at: NSPoint(x: 23, y: 8), withAttributes: [.font: titleFont, .foregroundColor: secondaryInk])
+        let titleHeight = (title as NSString).size(withAttributes: [.font: titleFont]).height
+        let iconRect = NSRect(x: 8, y: 8 + (titleHeight - 11) / 2, width: 11, height: 11)
+        kind.draw(in: iconRect, color: accent)
+        (title as NSString).draw(at: NSPoint(x: iconRect.maxX + 3, y: 8), withAttributes: [.font: titleFont, .foregroundColor: secondaryInk])
 
         let number = value.map(codeActivityNumber) ?? "—"
         let fontSize: CGFloat = number.count >= 5 ? 15 : 19
@@ -509,13 +552,13 @@ final class QuotaCardView: NSView {
         let green = NSColor(name: nil) { quotaIsDark($0) ? NSColor(srgbRed: 0.35, green: 0.92, blue: 0.76, alpha: 1) : NSColor(srgbRed: 0.05, green: 0.56, blue: 0.42, alpha: 1) }
         let orange = NSColor(name: nil) { quotaIsDark($0) ? NSColor(srgbRed: 1.0, green: 0.62, blue: 0.27, alpha: 1) : NSColor(srgbRed: 0.90, green: 0.39, blue: 0.04, alpha: 1) }
         let red = NSColor(name: nil) { quotaIsDark($0) ? NSColor(srgbRed: 1.0, green: 0.34, blue: 0.40, alpha: 1) : NSColor(srgbRed: 0.86, green: 0.13, blue: 0.20, alpha: 1) }
-        let values: [(String, Int?, NSColor, String)] = [
-            (tr("新增", "Added"), codeCounts?.added, green, "+"),
-            (tr("修改", "Edited"), codeCounts?.modified, orange, "✦"),
-            (tr("删除", "Deleted"), codeCounts?.deleted, red, "−")
+        let values: [(String, Int?, NSColor, CodeActivityKind)] = [
+            (tr("新增", "Added"), codeCounts?.added, green, .added),
+            (tr("修改", "Edited"), codeCounts?.modified, orange, .modified),
+            (tr("删除", "Deleted"), codeCounts?.deleted, red, .deleted)
         ]
         for (index, value) in values.enumerated() {
-            let card = CodeActivityMetricView(frame: NSRect(x: 20 + CGFloat(index) * 85, y: codeY + 32, width: 70, height: 56), title: value.0, value: value.1, accent: value.2, mark: value.3, status: status)
+            let card = CodeActivityMetricView(frame: NSRect(x: 20 + CGFloat(index) * 85, y: codeY + 32, width: 70, height: 56), title: value.0, value: value.1, accent: value.2, kind: value.3, status: status)
             addSubview(card)
         }
         let footerY = codeY + codeHeight
