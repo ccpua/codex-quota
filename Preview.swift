@@ -23,6 +23,14 @@ func renderQuotaPreviews(to directory: URL) throws {
         let appearance = NSAppearance(named: theme)!
         for (name, baseState) in states {
             var state = baseState
+            if name != "loading" {
+                state.codeActivity = CodeActivitySnapshot(date: now, timeZone: displayTimeZone, projectCount: 11, repositories: [
+                    CodeRepositoryActivity(path: "/Projects/example", projects: ["Example"], committed: CodeLineCounts(added: 102, modified: 13, deleted: 16), uncommitted: CodeLineCounts(added: name == "full" ? 1234567 : 528, modified: 109, deleted: 89))
+                ])
+            }
+            if name == "offline" { state.codeActivityError = "Could not refresh projects" }
+            let plans = ["normal": "plus", "dual": "pro", "low": "free", "empty": "go", "full": "enterprise", "update": "business", "refreshing": "future_long_membership_plan"]
+            state.planType = plans[name]
             state.benefitReset = now.addingTimeInterval(86400 * 6 + 3600 * 20)
             state.benefitResetConfidence = 0.29
             state.benefitResetReason = usesEnglish ? "No official notice; estimated from recent reset intervals and capacity pressure." : "无明确预告；基于近期重置间隔、窄范围补发及容量压力推测。"
@@ -67,6 +75,18 @@ func renderQuotaPreviews(to directory: URL) throws {
             let filename = "\(theme == .aqua ? "light" : "dark")-\(name).png"
             try data.write(to: directory.appendingPathComponent(filename))
             checked += 1
+            if name == "normal", CommandLine.arguments.contains("--preview-motion") {
+                let event = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
+                eye.mouseEntered(with: event)
+                for frame in 0..<24 {
+                    if frame == 12 { eye.performClick(nil) }
+                    RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 15.0))
+                    appearance.performAsCurrentDrawingAppearance { view.cacheDisplay(in: view.bounds, to: rep) }
+                    let motionName = String(format: "%@-eye-motion-%02d.png", theme == .aqua ? "light" : "dark", frame)
+                    try rep.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(motionName))
+                }
+                eye.mouseExited(with: event)
+            }
             view.expanded = false
             view.update(state: state, target: nil, refresh: nil, pin: nil, more: nil, hide: nil)
             view.setFrameSize(NSSize(width: 96, height: 34))

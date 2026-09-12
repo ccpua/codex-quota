@@ -1,5 +1,11 @@
 # Codex Quota
 
+The expanded panel also shows **added, modified and deleted source lines** across locally saved Codex projects, refreshed in the background every 10 seconds.
+
+Counts combine today's non-merge commits (committer time in the selected time zone, across locally available branches) with current uncommitted changes. Uncommitted changes may predate today, so the total is not a strict measure of edits made today. Replacement lines are paired within each diff hunk; remaining lines count as additions or deletions. Shared repositories are deduplicated, registered worktrees are included, and staged/unstaged changes are compared together against HEAD. New, unignored source files are included. Source and test files include blank lines and comments; docs, configuration, binaries and common build/dependency paths are excluded. These are project changes from all authors and tools, not Codex-only output. Hover text marks incomplete results when a directory is unavailable. Discovery uses Codex's local storage and may need updates when its format changes.
+
+After building, run `"Codex Quota.app/Contents/MacOS/CodexQuota" --code-activity-test` for fixture tests or `--code-activity-scan` for a single read-only scan of linked projects.
+
 [中文](README.md) · English
 
 View your remaining Codex quota in the macOS menu bar and a floating desktop widget.

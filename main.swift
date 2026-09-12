@@ -76,6 +76,19 @@ func quotaWindows(_ result: [String: Any]) -> [QuotaWindow] {
     return [QuotaWindow(bucket["primary"]), QuotaWindow(bucket["secondary"])].compactMap { $0 }
 }
 
+struct QuotaSnapshot {
+    let windows: [QuotaWindow]
+    let planType: String?
+
+    init(_ result: [String: Any]) {
+        windows = quotaWindows(result)
+        let buckets = result["rateLimitsByLimitId"] as? [String: Any]
+        let bucket = (buckets?["codex"] as? [String: Any]) ?? (result["rateLimits"] as? [String: Any]) ?? [:]
+        let raw = (bucket["planType"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        planType = raw.flatMap { $0.isEmpty || $0.lowercased() == "unknown" ? nil : $0.lowercased() }
+    }
+}
+
 final class QuotaClient {
     private let queue = DispatchQueue(label: "local.codexquota.rpc")
     private var process: Process?
@@ -86,7 +99,7 @@ final class QuotaClient {
     private var pending: Int?
     private var generation = 0
     private var lastRequest = Date.distantPast
-    var onResult: ((Result<[QuotaWindow], Error>) -> Void)?
+    var onResult: ((Result<QuotaSnapshot, Error>) -> Void)?
     struct Failure: LocalizedError { let errorDescription: String? }
 
     func refresh() { queue.async { self.refreshOnQueue() } }
@@ -98,7 +111,7 @@ final class QuotaClient {
         if process?.isRunning == true { process?.terminate() }
         process = nil; input = nil; ready = false; pending = nil; buffer.removeAll()
     }
-    private func report(_ result: Result<[QuotaWindow], Error>) {
+    private func report(_ result: Result<QuotaSnapshot, Error>) {
         DispatchQueue.main.async { self.onResult?(result) }
     }
     private func fail(_ message: String) {
@@ -175,9 +188,7 @@ final class QuotaClient {
                 ready = true; send(["method": "initialized"]); requestQuota()
             } else if id == pending, let result = message["result"] as? [String: Any] {
                 pending = nil
-                let windows = quotaWindows(result)
-                if windows.isEmpty { report(.failure(Failure(errorDescription: "当前账号未返回可用额度数据。"))) }
-                else { report(.success(windows)) }
+                report(.success(QuotaSnapshot(result)))
             }
         }
         // Partial server notifications are followed by a fresh read, so missing windows never become zero.
@@ -219,6 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     let client = QuotaClient()
     let benefitClient = BenefitResetClient()
     let updateClient = UpdateClient()
+    let codeActivityClient = CodeActivityClient()
+    var codeActivityTimer: Timer?
     var statusItem: NSStatusItem!
     var panel: NSPanel!
     var timer: Timer?
@@ -291,14 +304,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             guard let self = self else { return }
             self.state.refreshing = false
             switch result {
-            case .success(let windows):
-                self.state.windows = windows; self.state.lastUpdated = Date(); self.state.error = nil
-                self.resultSucceeded = true
-            case .failure(let error): self.state.error = error.localizedDescription
+            case .success(let snapshot):
+                self.state.windows = snapshot.windows
+                self.state.planType = snapshot.planType
+                self.state.lastUpdated = Date()
+                self.state.error = snapshot.windows.isEmpty ? "当前账号未返回可用额度数据。" : nil
+                self.resultSucceeded = !snapshot.windows.isEmpty
+            case .failure(let error):
+                self.state.error = error.localizedDescription
+                self.state.planType = nil
             }
             self.render()
             if self.smokeTest {
-                print(self.state.error ?? "Connected: \(self.state.windows.map { "\($0.name) remaining=\($0.remaining)%" }.joined(separator: ", "))")
+                print(self.state.error ?? "Connected: plan=\(self.state.planType ?? "unknown"), \(self.state.windows.map { "\($0.name) remaining=\($0.remaining)%" }.joined(separator: ", "))")
                 NSApp.terminate(nil)
             }
         }
@@ -327,8 +345,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
             self.render()
         }
+        codeActivityClient.onResult = { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let snapshot):
+                // Discard a scan started before midnight or a time-zone change.
+                guard snapshot.timeZone == displayTimeZone,
+                      CodeActivityScanner.dayInterval(Date(), zone: displayTimeZone).contains(snapshot.date) else {
+                    self.refreshCodeActivity(); return
+                }
+                self.state.codeActivity = snapshot; self.state.codeActivityError = nil
+            case .failure(let error): self.state.codeActivityError = error.localizedDescription
+            }
+            self.render()
+        }
         render()
-        if !smokeTest { panel.orderFrontRegardless() }
+        if !smokeTest {
+            panel.orderFrontRegardless()
+            refreshCodeActivity()
+            let activityTimer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in self?.refreshCodeActivity() }
+            activityTimer.tolerance = 1
+            codeActivityTimer = activityTimer
+            RunLoop.main.add(activityTimer, forMode: .common)
+        }
         client.refresh()
         benefitClient.refresh()
         let predictionTimer = Timer(timeInterval: 600, repeats: true) { [weak self] _ in
@@ -355,6 +394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return false
     }
     func applicationWillTerminate(_ notification: Notification) {
+        codeActivityTimer?.invalidate()
         timer?.invalidate(); benefitTimer?.invalidate(); updateTimer?.invalidate(); transitionTimer?.invalidate(); client.stop(); benefitClient.stop(); updateClient.stop(); terminationSignal?.cancel()
         hoverWork?.cancel()
         if !smokeTest { savePosition() }
@@ -389,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
     }
     @objc func refresh() {
+        refreshCodeActivity()
         benefitClient.refresh()
         refreshQuota()
     }
@@ -577,6 +618,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if identifier.isEmpty { UserDefaults.standard.removeObject(forKey: "displayTimeZone") }
         else if TimeZone(identifier: identifier) != nil { UserDefaults.standard.set(identifier, forKey: "displayTimeZone") }
         render()
+        refreshCodeActivity()
+    }
+    @objc func refreshCodeActivity() {
+        if let snapshot = state.codeActivity,
+           snapshot.timeZone != displayTimeZone || !CodeActivityScanner.dayInterval(Date(), zone: displayTimeZone).contains(snapshot.date) {
+            state.codeActivity = nil
+            state.codeActivityError = nil
+            render()
+        }
+        codeActivityClient.refresh()
     }
     func makeMenu() -> NSMenu {
         let menu = NSMenu()
@@ -589,6 +640,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         menu.autoenablesItems = false
         menu.addItem(.separator())
+        let versionItem = NSMenuItem(title: tr("当前版本", "Current version") + " · " + appVersionLabel(currentAppVersion), action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        menu.addItem(versionItem)
         let updateTitle: String
         if state.installingUpdate { updateTitle = tr("正在安装更新…", "Installing Update…") }
         else if state.checkingForUpdate { updateTitle = tr("正在检查更新…", "Checking for Updates…") }
@@ -706,6 +760,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"), CommandLine.arguments.count > previewIndex + 1 {
     _ = NSApplication.shared
     try renderQuotaPreviews(to: URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1]))
+} else if CommandLine.arguments.contains("--code-activity-test") {
+    try runCodeActivityTests()
+} else if CommandLine.arguments.contains("--code-activity-scan") {
+    let snapshot = CodeActivityScanner.scan(projects: try CodexProjects.read(), zone: displayTimeZone)
+    print("Projects=\(snapshot.projectCount) directories=\(snapshot.repositories.count) added=\(snapshot.total.added) modified=\(snapshot.total.modified) deleted=\(snapshot.total.deleted)")
+    for repo in snapshot.repositories { print("\(repo.path): commits=\(repo.committed) uncommitted=\(repo.uncommitted) issue=\(repo.issue ?? "none")") }
 } else if CommandLine.arguments.contains("--self-test") {
     let originalArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
     var testArguments = originalArguments
@@ -723,7 +783,16 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     precondition(AppVersion("1.0") == nil && AppVersion("latest") == nil)
     precondition(updateDownloadURL(for: "1.2.3")?.lastPathComponent == "Codex-Quota-1.2.3-arm64.dmg")
     precondition(updateDownloadURL(for: "../bad") == nil)
-    precondition(currentAppVersion == "1.0.2")
+    precondition(currentAppVersion == "1.0.5")
+    let planSnapshot = QuotaSnapshot(["rateLimitsByLimitId": ["codex": ["planType": " Plus ", "primary": window(63, 10080)], "other": ["planType": "pro"]], "rateLimits": ["planType": "free"]])
+    precondition(planSnapshot.planType == "plus" && planSnapshot.windows.first?.remaining == 37)
+    precondition(QuotaSnapshot(["rateLimits": ["planType": "pro"]]).planType == "pro")
+    precondition(QuotaSnapshot(["rateLimitsByLimitId": ["other": ["planType": "pro"]]]).planType == nil)
+    for absent: Any in [NSNull(), "", "  ", "unknown", 42] {
+        precondition(QuotaSnapshot(["rateLimits": ["planType": absent]]).planType == nil)
+    }
+    precondition(membershipPlanLabel("plus") == "Plus" && membershipPlanLabel("enterprise") == "Enterprise")
+    precondition(membershipPlanLabel(nil) == "—")
     let r = quotaWindows(["rateLimitsByLimitId": ["codex": ["primary": window(63, 10080), "secondary": NSNull()]]])
     precondition(r.count == 1 && r[0].remaining == 37 && r[0].name == "本周额度")
     precondition(quotaWindows([:]).isEmpty)

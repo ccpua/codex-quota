@@ -42,6 +42,7 @@ var refreshIntervalLabel: String { tr("每 \(Int(refreshIntervalSeconds)) 秒自
 
 struct QuotaDisplayState {
     var windows: [QuotaWindow] = []
+    var planType: String?
     var lastUpdated: Date?
     var error: String?
     var refreshing = false
@@ -54,6 +55,8 @@ struct QuotaDisplayState {
     var availableVersion: String?
     var checkingForUpdate = false
     var installingUpdate = false
+    var codeActivity: CodeActivitySnapshot?
+    var codeActivityError: String?
     var remaining: Int? { windows.map({ $0.remaining }).min() }
     var menuTitle: String {
         let update = availableVersion == nil ? "" : " ↑"
@@ -67,6 +70,49 @@ struct QuotaDisplayState {
         return "\(statePrefix) \(format.string(from: date))"
     }
     private var statePrefix: String { error == nil ? tr("已更新", "Updated") : tr("上次更新", "Last update") }
+}
+
+func membershipPlanLabel(_ plan: String?) -> String {
+    guard let plan else { return "—" }
+    switch plan {
+    case "free": return "Free"
+    case "go": return "Go"
+    case "plus": return "Plus"
+    case "pro": return "Pro"
+    case "team": return "Team"
+    case "business": return "Business"
+    case "enterprise": return "Enterprise"
+    case "edu": return "Edu"
+    default: return plan.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+private final class MembershipBadge: NSView {
+    let title: String
+    let available: Bool
+    private let font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+
+    init(plan: String?) {
+        title = membershipPlanLabel(plan)
+        available = plan != nil
+        let width = min(84, max(32, ceil((title as NSString).size(withAttributes: [.font: font]).width) + 16))
+        super.init(frame: NSRect(x: 82, y: 14, width: width, height: 20))
+        toolTip = tr("会员计划", "Membership plan") + " · " + (available ? title : tr("暂未获取", "Unavailable"))
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel(toolTip)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func draw(_ dirtyRect: NSRect) {
+        let color = available ? quotaAccent(80) : NSColor.secondaryLabelColor
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        color.withAlphaComponent(0.10).setFill(); shape.fill()
+        color.withAlphaComponent(0.20).setStroke(); shape.lineWidth = 0.5; shape.stroke()
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center; paragraph.lineBreakMode = .byTruncatingTail
+        let height = (title as NSString).size(withAttributes: [.font: font]).height
+        (title as NSString).draw(in: NSRect(x: 6, y: (bounds.height - height) / 2, width: bounds.width - 12, height: height), withAttributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
+    }
 }
 
 private let primaryInk = NSColor.labelColor
@@ -113,6 +159,76 @@ final class QuotaProgressView: NSView {
     }
 }
 
+private final class CodeActivityMetricView: NSView {
+    private let title: String
+    private let value: Int?
+    private let accent: NSColor
+    private let mark: String
+
+    override var isFlipped: Bool { true }
+
+    init(frame: NSRect, title: String, value: Int?, accent: NSColor, mark: String, status: String?) {
+        self.title = title
+        self.value = value
+        self.accent = accent
+        self.mark = mark
+        super.init(frame: frame)
+        let exactValue = value.map(String.init) ?? "—"
+        toolTip = [title + " " + exactValue, status].compactMap { $0 }.joined(separator: " · ")
+        setAccessibilityElement(true)
+        setAccessibilityRole(.staticText)
+        setAccessibilityLabel(title)
+        setAccessibilityValue(exactValue)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let dark = quotaIsDark()
+        let card = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
+        NSGraphicsContext.saveGraphicsState()
+        card.addClip()
+        let top = accent.withAlphaComponent(dark ? 0.20 : 0.13)
+        let bottom = accent.withAlphaComponent(dark ? 0.055 : 0.025)
+        NSGradient(starting: top, ending: bottom)!.draw(in: bounds, angle: 90)
+
+        // A soft oversized glow gives each metric a distinct visual identity.
+        let glowRect = NSRect(x: bounds.maxX - 29, y: -19, width: 46, height: 46)
+        let glow = NSBezierPath(ovalIn: glowRect)
+        accent.withAlphaComponent(dark ? 0.10 : 0.07).setFill(); glow.fill()
+
+        let highlight = NSBezierPath()
+        highlight.move(to: NSPoint(x: 10, y: 1))
+        highlight.line(to: NSPoint(x: bounds.width - 10, y: 1))
+        highlight.lineWidth = 1; highlight.lineCapStyle = .round
+        accent.withAlphaComponent(dark ? 0.32 : 0.22).setStroke(); highlight.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+
+        accent.withAlphaComponent(dark ? 0.40 : 0.30).setStroke()
+        card.lineWidth = 0.8; card.stroke()
+
+        let markFont = NSFont.systemFont(ofSize: 10, weight: .bold)
+        (mark as NSString).draw(at: NSPoint(x: 8, y: 7), withAttributes: [.font: markFont, .foregroundColor: accent])
+        let titleFont = NSFont.systemFont(ofSize: 8.5, weight: .medium)
+        (title as NSString).draw(at: NSPoint(x: 23, y: 8), withAttributes: [.font: titleFont, .foregroundColor: secondaryInk])
+
+        let number = value.map(codeActivityNumber) ?? "—"
+        let fontSize: CGFloat = number.count >= 5 ? 15 : 19
+        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .bold)
+        let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .left
+        (number as NSString).draw(in: NSRect(x: 8, y: 27, width: bounds.width - 13, height: 24), withAttributes: [
+            .font: numberFont,
+            .foregroundColor: value == nil ? secondaryInk : accent,
+            .paragraphStyle: paragraph
+        ])
+    }
+}
+
+private func codeActivityNumber(_ value: Int) -> String {
+    if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000) }
+    if value >= 100_000 { return String(format: "%.0fK", Double(value) / 1000) }
+    return String(value)
+}
+
 final class QuotaCapsuleView: NSView {
     let state: QuotaDisplayState
     var onDrag: ((NSEvent) -> Void)?
@@ -146,13 +262,142 @@ final class QuotaCapsuleView: NSView {
     }
 }
 
-private final class QuotaIconButton: NSButton {
+private class QuotaIconButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
         // AppKit supplies hitTest points in the superview's coordinates.
         let localPoint = convert(point, from: superview)
         guard !isHidden, alphaValue > 0.01, bounds.contains(localPoint) else { return nil }
         return self
+    }
+}
+
+/// A small lens that comes alive on interaction, without a permanent idle timer.
+private final class ForecastEyeButton: QuotaIconButton {
+    private var tracking: NSTrackingArea?
+    private var animationTimer: Timer?
+    private var hovering = false
+    private var hoverStarted = Date.timeIntervalSinceReferenceDate
+    private var clickedAt: TimeInterval?
+    private var glow: CGFloat = 0
+    private var lastFrame = Date.timeIntervalSinceReferenceDate
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        isBordered = false
+        title = ""
+        setButtonType(.momentaryChange)
+        toolTip = tr("查看预测理由", "View forecast reason")
+        setAccessibilityLabel(toolTip)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    deinit { animationTimer?.invalidate() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        tracking = area
+    }
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        hoverStarted = Date.timeIntervalSinceReferenceDate
+        animate()
+    }
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        animate()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            animationTimer?.invalidate(); animationTimer = nil
+            hovering = false; glow = 0; clickedAt = nil
+        }
+    }
+    override func sendAction(_ action: Selector?, to target: Any?) -> Bool {
+        clickedAt = Date.timeIntervalSinceReferenceDate
+        animate()
+        return super.sendAction(action, to: target)
+    }
+    private func animate() {
+        needsDisplay = true
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            glow = hovering ? 1 : 0
+            clickedAt = nil
+            animationTimer?.invalidate(); animationTimer = nil
+            return
+        }
+        guard animationTimer == nil else { return }
+        lastFrame = Date.timeIntervalSinceReferenceDate
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in self?.tick() }
+        timer.tolerance = 0.005
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
+    }
+    private func tick() {
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion { animate(); return }
+        let now = Date.timeIntervalSinceReferenceDate
+        let step = CGFloat(min(now - lastFrame, 0.1)) / 0.18
+        lastFrame = now
+        glow = hovering ? min(1, glow + step) : max(0, glow - step)
+        if let clickedAt, now - clickedAt > 0.65 { self.clickedAt = nil }
+        needsDisplay = true
+        if !hovering && glow == 0 && clickedAt == nil {
+            animationTimer?.invalidate(); animationTimer = nil
+        }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let now = Date.timeIntervalSinceReferenceDate
+        let elapsed = reduced ? 0 : now - hoverStarted
+        let dark = quotaIsDark()
+        let accent = quotaAccent(80)
+        let center = NSPoint(x: bounds.midX, y: bounds.midY)
+        let disc = NSBezierPath(ovalIn: bounds.insetBy(dx: 2, dy: 2))
+        accent.withAlphaComponent((dark ? 0.09 : 0.07) + glow * 0.10).setFill()
+        disc.fill()
+        accent.withAlphaComponent(0.20 + glow * 0.20).setStroke()
+        disc.lineWidth = 0.65; disc.stroke()
+
+        if glow > 0 && !reduced {
+            let orbit = NSBezierPath()
+            orbit.appendArc(withCenter: center, radius: 10, startAngle: CGFloat(elapsed * 150), endAngle: CGFloat(elapsed * 150 + 100))
+            orbit.lineWidth = 1; orbit.lineCapStyle = .round
+            accent.withAlphaComponent(glow * 0.85).setStroke(); orbit.stroke()
+        }
+        // Draw the eye as two curves, gently closing the lid once per hover cycle.
+        let phase = elapsed.truncatingRemainder(dividingBy: 3.4)
+        let blink = hovering && !reduced ? max(0, 1 - abs(phase - 0.45) / 0.12) : 0
+        let opening = CGFloat(1 - blink * 0.92)
+        let pressed: CGFloat = isHighlighted ? 0.90 : 1
+        let halfWidth: CGFloat = 6.4 * pressed
+        let lid: CGFloat = 5.1 * opening * pressed
+        let eye = NSBezierPath()
+        let left = NSPoint(x: center.x - halfWidth, y: center.y)
+        let right = NSPoint(x: center.x + halfWidth, y: center.y)
+        eye.move(to: left)
+        eye.curve(to: right, controlPoint1: NSPoint(x: center.x - 2.8, y: center.y + lid), controlPoint2: NSPoint(x: center.x + 2.8, y: center.y + lid))
+        eye.curve(to: left, controlPoint1: NSPoint(x: center.x + 2.8, y: center.y - lid), controlPoint2: NSPoint(x: center.x - 2.8, y: center.y - lid))
+        eye.lineWidth = 1.15; eye.lineJoinStyle = .round
+        accent.withAlphaComponent(0.85 + glow * 0.15).setStroke(); eye.stroke()
+        let gaze = hovering && !reduced ? CGFloat(sin(elapsed * 2.2)) * 0.8 * glow : 0
+        NSGraphicsContext.saveGraphicsState()
+        eye.addClip()
+        accent.setFill()
+        NSBezierPath(ovalIn: NSRect(x: center.x - 2 + gaze, y: center.y - 2, width: 4, height: 4)).fill()
+        NSColor.white.withAlphaComponent(dark ? 0.9 : 0.8).setFill()
+        NSBezierPath(ovalIn: NSRect(x: center.x - 0.6 + gaze, y: center.y + 0.3, width: 1.2, height: 1.2)).fill()
+        NSGraphicsContext.restoreGraphicsState()
+
+        if let clickedAt, !reduced {
+            let progress = CGFloat(min(1, (now - clickedAt) / 0.65))
+            let radius = 5 + progress * 6.5
+            let pulse = NSBezierPath(ovalIn: NSRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2))
+            accent.withAlphaComponent((1 - progress) * 0.8).setStroke()
+            pulse.lineWidth = 1.2 * (1 - progress) + 0.3; pulse.stroke()
+        }
     }
 }
 
@@ -175,13 +420,15 @@ final class QuotaCardView: NSView {
         let errorHeight: CGFloat = state.error == nil ? 0 : 44
         // The 18pt label frames include bottom font padding; center the visible
         // glyphs between the separators rather than centering those frames.
-        let benefitHeight: CGFloat = 57
+        let benefitHeight: CGFloat = 60
         let updateHeight: CGFloat = state.availableVersion == nil ? 0 : 26
-        contentHeight = 52 + CGFloat(blockCount) * 122 + errorHeight + benefitHeight + updateHeight + 44
+        let codeHeight: CGFloat = 96
+        contentHeight = 52 + CGFloat(blockCount) * 122 + errorHeight + benefitHeight + codeHeight + updateHeight + 44
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: contentHeight))
         setAccessibilityElement(false)
-        let brand = text("CODEX", x: 20, y: 17, width: 110, size: 10, color: primaryInk, weight: .semibold)
+        let brand = text("CODEX", x: 20, y: 17, width: 60, size: 10, color: primaryInk, weight: .semibold)
         brand.attributedStringValue = NSAttributedString(string: "CODEX", attributes: [.font: brand.font!, .foregroundColor: primaryInk, .kern: 1.8])
+        addSubview(MembershipBadge(plan: state.planType))
         pinButton = icon("pin\(state.pinned ? ".fill" : "")", label: state.pinned ? tr("取消置顶", "Unpin") : tr("置顶小窗", "Pin panel"), x: 175, y: 10, target: target, action: pin)
         pinButton.contentTintColor = state.pinned ? quotaAccent(80) : secondaryInk
         moreButton = icon("ellipsis", label: tr("更多选项", "More options"), x: 207, y: 10, target: target, action: more)
@@ -223,7 +470,7 @@ final class QuotaCardView: NSView {
         let benefitY = errorY + (state.error == nil ? 0 : 44)
         // Center the visible two-line text block, allowing for NSTextField's font insets.
         let predictionTitleY = benefitY + 13
-        let predictionDetailsY = predictionTitleY + 18
+        let predictionDetailsY = predictionTitleY + 21
         let benefitSeparator = NSBox(frame: NSRect(x: 20, y: benefitY, width: 240, height: 1)); benefitSeparator.boxType = .separator; addSubview(benefitSeparator)
         text(tr("下次福利重置（预测）", "Next bonus reset (est.)"), x: 20, y: predictionTitleY, width: 150, size: 10, color: secondaryInk, weight: .medium)
         if let reset = state.benefitReset {
@@ -237,8 +484,10 @@ final class QuotaCardView: NSView {
                 reasonX = label.frame.maxX + 2
             }
             if state.benefitResetReason != nil {
-                reasonButton = icon("eye", label: tr("查看预测理由", "View forecast reason"), x: reasonX, y: predictionDetailsY - 6, target: self, action: #selector(showReason(_:)))
-                reasonButton?.setFrameSize(NSSize(width: 24, height: 24))
+                let eye = ForecastEyeButton(frame: NSRect(x: reasonX, y: predictionDetailsY - 6, width: 24, height: 24))
+                eye.target = self; eye.action = #selector(showReason(_:))
+                addSubview(eye)
+                reasonButton = eye
             }
             let hasDetails = state.benefitResetConfidence != nil || state.benefitResetReason != nil
             let status = text(benefitResetStatus(reset), x: hasDetails ? 144 : 20, y: predictionDetailsY, width: hasDetails ? 116 : 240, size: 10, color: reset > Date() ? quotaAccent(80) : secondaryInk)
@@ -248,7 +497,28 @@ final class QuotaCardView: NSView {
             let message = state.benefitResetLoading ? tr("正在获取预测…", "Loading forecast…") : state.benefitResetUnavailable ? tr("预测暂不可用", "Forecast unavailable") : tr("暂未提供预测", "No forecast available")
             text(message, x: 20, y: predictionDetailsY, width: 240, size: 10, color: secondaryInk)
         }
-        let footerY = benefitY + benefitHeight
+        let codeY = benefitY + benefitHeight
+        let codeSeparator = NSBox(frame: NSRect(x: 20, y: codeY, width: 240, height: 1))
+        codeSeparator.boxType = .separator; addSubview(codeSeparator)
+        text(tr("今日代码变更", "Today's code changes"), x: 20, y: codeY + 10, width: 240, size: 11, weight: .medium)
+        let codeCounts = state.codeActivity?.total
+        let status: String?
+        if state.codeActivityError != nil { status = tr("刷新失败，显示上次结果", "Refresh failed; showing the previous result") }
+        else if state.codeActivity?.incomplete == true { status = tr("部分目录不可用", "Some directories are unavailable") }
+        else { status = nil }
+        let green = NSColor(name: nil) { quotaIsDark($0) ? NSColor(srgbRed: 0.35, green: 0.92, blue: 0.76, alpha: 1) : NSColor(srgbRed: 0.05, green: 0.56, blue: 0.42, alpha: 1) }
+        let orange = NSColor(name: nil) { quotaIsDark($0) ? NSColor(srgbRed: 1.0, green: 0.62, blue: 0.27, alpha: 1) : NSColor(srgbRed: 0.90, green: 0.39, blue: 0.04, alpha: 1) }
+        let red = NSColor(name: nil) { quotaIsDark($0) ? NSColor(srgbRed: 1.0, green: 0.34, blue: 0.40, alpha: 1) : NSColor(srgbRed: 0.86, green: 0.13, blue: 0.20, alpha: 1) }
+        let values: [(String, Int?, NSColor, String)] = [
+            (tr("新增", "Added"), codeCounts?.added, green, "+"),
+            (tr("修改", "Edited"), codeCounts?.modified, orange, "✦"),
+            (tr("删除", "Deleted"), codeCounts?.deleted, red, "−")
+        ]
+        for (index, value) in values.enumerated() {
+            let card = CodeActivityMetricView(frame: NSRect(x: 20 + CGFloat(index) * 85, y: codeY + 32, width: 70, height: 56), title: value.0, value: value.1, accent: value.2, mark: value.3, status: status)
+            addSubview(card)
+        }
+        let footerY = codeY + codeHeight
         let separator = NSBox(frame: NSRect(x: 20, y: footerY, width: 240, height: 1)); separator.boxType = .separator; addSubview(separator)
         text(state.freshness, x: 20, y: footerY + 13, width: 202, size: 10, color: secondaryInk)
         refreshButton = icon("arrow.clockwise", label: tr("立即刷新", "Refresh now") + " · " + refreshIntervalLabel, x: 235, y: footerY + 6, target: target, action: refresh)
