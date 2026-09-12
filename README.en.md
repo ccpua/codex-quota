@@ -10,7 +10,7 @@ After building, run `"Codex Quota.app/Contents/MacOS/CodexQuota" --code-activity
 
 View your remaining Codex quota in the macOS menu bar and a floating desktop widget.
 
-![Codex Quota interface](docs/images/codex-quota-preview.png)
+![Codex Quota interface](docs/images/codex-quota-preview-en.png)
 
 ## Requirements
 
