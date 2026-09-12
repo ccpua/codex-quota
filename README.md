@@ -13,7 +13,7 @@
 
 ## 下载与启动（无需编译）
 
-优先在 [Releases](https://github.com/ccpua/codex-quota/releases) 下载 `Codex-Quota-*-arm64.dmg`：
+直接下载最新版：[Codex-Quota-latest-arm64.dmg](https://github.com/ccpua/codex-quota/releases/download/latest/Codex-Quota-latest-arm64.dmg)：
 
 1. 双击 DMG。
 2. 将 **Codex Quota.app** 拖到“应用程序”文件夹。

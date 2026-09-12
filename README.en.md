@@ -19,7 +19,7 @@ View your remaining Codex quota in the macOS menu bar and a floating desktop wid
 
 ## Download and launch (no build required)
 
-Download `Codex-Quota-*-arm64.dmg` from [Releases](https://github.com/ccpua/codex-quota/releases):
+Download the latest version directly: [Codex-Quota-latest-arm64.dmg](https://github.com/ccpua/codex-quota/releases/download/latest/Codex-Quota-latest-arm64.dmg):
 
 1. Double-click the DMG.
 2. Drag **Codex Quota.app** into your Applications folder.
