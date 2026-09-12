@@ -1,23 +1,26 @@
 import AppKit
 
 var currentAppVersion: String {
-    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.5"
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.6"
 }
 private let updateVersionEndpoint = URL(string: "https://assets-dev-1412625299.cos.ap-guangzhou.myqcloud.com/codex-quota/config/codex_reset_version")!
-private let updateDownloadBase = URL(string: "https://assets-dev-1412625299.cos.ap-guangzhou.myqcloud.com/codex-quota/dl/")!
+private let updateDownloadBase = URL(string: "https://github.com/ccpua/codex-quota/releases/download/")!
 
 struct AppVersion: Comparable, Equatable {
     let components: [Int]
     let string: String
+    let releaseTag: String
 
     init?(_ raw: String) {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        let number = value.hasPrefix("v") ? String(value.dropFirst()) : value
+        let parts = number.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3,
               parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }),
               parts.compactMap({ Int($0) }).count == 3 else { return nil }
         components = parts.compactMap { Int($0) }
-        string = value
+        string = number
+        releaseTag = "v\(number)"
     }
 
     static func < (lhs: AppVersion, rhs: AppVersion) -> Bool {
@@ -26,8 +29,10 @@ struct AppVersion: Comparable, Equatable {
 }
 
 func updateDownloadURL(for version: String) -> URL? {
-    guard AppVersion(version) != nil else { return nil }
-    return updateDownloadBase.appendingPathComponent("Codex-Quota-\(version)-arm64.dmg")
+    guard let version = AppVersion(version) else { return nil }
+    return updateDownloadBase
+        .appendingPathComponent(version.releaseTag, isDirectory: true)
+        .appendingPathComponent("Codex-Quota-\(version.string)-arm64.dmg")
 }
 
 final class UpdateClient {
