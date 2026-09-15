@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 
 /// Disjoint line counts: pair replacements inside each zero-context diff hunk.
-struct CodeLineCounts: Equatable {
+struct CodeLineCounts: Codable, Equatable {
     var added = 0
     var modified = 0
     var deleted = 0
@@ -154,6 +154,146 @@ enum ActivityGit {
     }
 }
 
+private struct CodeActivityBaselineFile: Codable {
+    let path: String
+    let snapshot: String?
+}
+
+private struct CodeActivityWorktreeBaseline: Codable {
+    let path: String
+    let head: String
+    let files: [CodeActivityBaselineFile]
+}
+
+private struct CodeActivityBaseline: Codable {
+    let version: Int
+    let dayStart: TimeInterval
+    let timeZoneIdentifier: String
+    let committed: CodeLineCounts
+    var worktrees: [CodeActivityWorktreeBaseline]
+}
+
+/// Persists the working-copy state first observed on a calendar day. Only files
+/// already dirty at that moment are copied; clean files can be reconstructed
+/// from the baseline HEAD, keeping storage bounded for large repositories.
+final class CodeActivityBaselineStore {
+    let root: URL
+    init(root: URL? = nil) {
+        if let root { self.root = root }
+        else {
+            let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            self.root = support.appendingPathComponent("Codex Quota/CodeActivityBaselines", isDirectory: true)
+        }
+    }
+
+    private func stableID(_ value: String) -> String {
+        var hash: UInt64 = 14695981039346656037
+        for byte in value.utf8 { hash = (hash ^ UInt64(byte)) &* 1099511628211 }
+        return String(hash, radix: 16)
+    }
+
+    private func directory(commonPath: String, day: Date, zone: TimeZone) -> URL {
+        let dayID = String(Int(day.timeIntervalSince1970)) + "-" + stableID(zone.identifier)
+        return root.appendingPathComponent(dayID, isDirectory: true).appendingPathComponent(stableID(commonPath), isDirectory: true)
+    }
+
+    private func manifestURL(commonPath: String, day: Date, zone: TimeZone) -> URL {
+        directory(commonPath: commonPath, day: day, zone: zone).appendingPathComponent("manifest.json")
+    }
+
+    fileprivate func load(commonPath: String, day: Date, zone: TimeZone) -> CodeActivityBaseline? {
+        let url = manifestURL(commonPath: commonPath, day: day, zone: zone)
+        guard let data = try? Data(contentsOf: url), let baseline = try? JSONDecoder().decode(CodeActivityBaseline.self, from: data),
+              baseline.version == 1, baseline.dayStart == day.timeIntervalSince1970,
+              baseline.timeZoneIdentifier == zone.identifier else { return nil }
+        return baseline
+    }
+
+    fileprivate func save(_ baseline: CodeActivityBaseline, commonPath: String, day: Date, zone: TimeZone) throws {
+        let directory = directory(commonPath: commonPath, day: day, zone: zone)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let currentDayDirectory = directory.deletingLastPathComponent().standardizedFileURL
+        for oldDay in (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            where oldDay.standardizedFileURL != currentDayDirectory {
+            try? FileManager.default.removeItem(at: oldDay)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        let manifest = manifestURL(commonPath: commonPath, day: day, zone: zone)
+        try encoder.encode(baseline).write(to: manifest, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifest.path)
+    }
+
+    fileprivate func snapshot(path: String, head: String, commonPath: String, day: Date, zone: TimeZone) throws -> CodeActivityWorktreeBaseline {
+        let changes = try CodeActivityScanner.changedPaths(path: path, head: head)
+        let dirty = changes.tracked.union(changes.untracked).sorted()
+        let snapshotDirectory = directory(commonPath: commonPath, day: day, zone: zone)
+            .appendingPathComponent("snapshots", isDirectory: true)
+            .appendingPathComponent(stableID(path), isDirectory: true)
+        try FileManager.default.createDirectory(at: snapshotDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: snapshotDirectory.path)
+        var files: [CodeActivityBaselineFile] = []
+        var storedBytes = 0
+        for (index, relativePath) in dirty.enumerated() {
+            let source = URL(fileURLWithPath: path).appendingPathComponent(relativePath).standardizedFileURL
+            guard source.path == URL(fileURLWithPath: path).standardizedFileURL.path || source.path.hasPrefix(URL(fileURLWithPath: path).standardizedFileURL.path + "/") else { continue }
+            guard FileManager.default.fileExists(atPath: source.path) else {
+                files.append(CodeActivityBaselineFile(path: relativePath, snapshot: nil)); continue
+            }
+            let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+            let size = values.fileSize ?? 0
+            guard size <= 32 * 1024 * 1024, storedBytes + size <= 96 * 1024 * 1024 else {
+                throw CodeActivityFailure.message(tr("每日基线文件过大，未纳入汇总", "Daily baseline files are too large to include"))
+            }
+            let name = "\(index).bin"
+            let snapshot = snapshotDirectory.appendingPathComponent(name)
+            try Data(contentsOf: source, options: .mappedIfSafe).write(to: snapshot, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: snapshot.path)
+            storedBytes += size
+            files.append(CodeActivityBaselineFile(path: relativePath, snapshot: "snapshots/\(stableID(path))/\(name)"))
+        }
+        return CodeActivityWorktreeBaseline(path: path, head: head, files: files)
+    }
+
+    fileprivate func activity(since baseline: CodeActivityWorktreeBaseline, commonPath: String, day: Date, zone: TimeZone) throws -> CodeLineCounts {
+        let currentHead = try ActivityGit.text(baseline.path, ["rev-parse", "--verify", "--quiet", "HEAD"], acceptDifference: true).trimmingCharacters(in: .newlines)
+        let changes = try CodeActivityScanner.changedPaths(path: baseline.path, head: currentHead)
+        var trackedSinceBaseline = Set<String>()
+        if !baseline.head.isEmpty {
+            let data = try ActivityGit.run(baseline.path, ["diff", "--name-only", "-z", "--no-renames", baseline.head, "--"] + CodeActivityScanner.pathspecs)
+            trackedSinceBaseline = CodeActivityScanner.paths(data).filter(CodeActivityScanner.isSource)
+        } else {
+            trackedSinceBaseline = changes.tracked
+        }
+        let saved = Dictionary(uniqueKeysWithValues: baseline.files.map { ($0.path, $0.snapshot) })
+        let candidates = Set(saved.keys).union(trackedSinceBaseline).union(changes.untracked)
+        var result = CodeLineCounts()
+        for relativePath in candidates.sorted() {
+            let current = URL(fileURLWithPath: baseline.path).appendingPathComponent(relativePath).standardizedFileURL
+            let values = try? current.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            let currentExists = values?.isRegularFile == true && values?.isSymbolicLink != true
+            if let entry = baseline.files.first(where: { $0.path == relativePath }) {
+                let old = entry.snapshot.map { directory(commonPath: commonPath, day: day, zone: zone).appendingPathComponent($0).path } ?? "/dev/null"
+                let new = currentExists ? current.path : "/dev/null"
+                if old != "/dev/null" || new != "/dev/null" {
+                    let patch = try ActivityGit.text(baseline.path, ["diff", "--no-index"] + CodeActivityScanner.diffOptions + ["--", old, new], acceptDifference: true)
+                    result = result + CodeLineCounts.patch(patch)
+                }
+            } else if changes.untracked.contains(relativePath) {
+                guard currentExists else { continue }
+                let patch = try ActivityGit.text(baseline.path, ["diff", "--no-index"] + CodeActivityScanner.diffOptions + ["--", "/dev/null", current.path], acceptDifference: true)
+                result = result + CodeLineCounts.patch(patch)
+            } else if !baseline.head.isEmpty {
+                let patch = try ActivityGit.text(baseline.path, ["diff"] + CodeActivityScanner.diffOptions + ["--no-renames", baseline.head, "--", relativePath])
+                result = result + CodeLineCounts.patch(patch)
+            }
+        }
+        return result
+    }
+}
+
 enum CodeActivityScanner {
     final class Cache {
         struct Entry { let fingerprint: Data; let day: Date; let counts: CodeLineCounts; let saved: Date }
@@ -172,6 +312,19 @@ enum CodeActivityScanner {
             && !parts.dropLast().contains(where: excludedDirectories.contains)
             && !path.hasSuffix(".min.js") && !path.contains("console/assets/")
     }
+    static func paths(_ data: Data) -> Set<String> {
+        Set(data.split(separator: UInt8(0)).map { String(decoding: $0, as: UTF8.self) })
+    }
+    static func changedPaths(path: String, head: String) throws -> (tracked: Set<String>, untracked: Set<String>) {
+        let trackedData: Data
+        if head.isEmpty {
+            trackedData = try ActivityGit.run(path, ["ls-files", "--cached", "-z"])
+        } else {
+            trackedData = try ActivityGit.run(path, ["diff", "--name-only", "-z", "HEAD", "--"] + pathspecs)
+        }
+        let untrackedData = try ActivityGit.run(path, ["ls-files", "--others", "--exclude-standard", "-z"])
+        return (paths(trackedData).filter(isSource), paths(untrackedData).filter(isSource))
+    }
     static let diffOptions = ["--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--unified=0", "--inter-hunk-context=0"]
 
     static func dayInterval(_ date: Date, zone: TimeZone) -> DateInterval {
@@ -179,20 +332,20 @@ enum CodeActivityScanner {
         return calendar.dateInterval(of: .day, for: date)!
     }
 
-    static func scan(projects: [CodeProject], date: Date = Date(), zone: TimeZone, cache: Cache? = nil) -> CodeActivitySnapshot {
+    static func scan(projects: [CodeProject], date: Date = Date(), zone: TimeZone, cache: Cache? = nil, baselineStore: CodeActivityBaselineStore? = nil) -> CodeActivitySnapshot {
         let day = dayInterval(date, zone: zone)
         var paths: [String: Set<String>] = [:]
         for project in projects {
             for path in project.roots { paths[URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path, default: []].insert(project.name) }
         }
-        var repositories: [String: (path: String, names: Set<String>, worktrees: Set<String>)] = [:]
+        var repositories: [String: (common: String, path: String, names: Set<String>, worktrees: Set<String>)] = [:]
         var results: [CodeRepositoryActivity] = []
         for (path, names) in paths.sorted(by: { $0.key < $1.key }) {
             do {
                 let top = try ActivityGit.text(path, ["rev-parse", "--show-toplevel"]).trimmingCharacters(in: .newlines)
                 let common = try ActivityGit.text(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).trimmingCharacters(in: .newlines)
                 let key = URL(fileURLWithPath: common).resolvingSymlinksInPath().path
-                var repo = repositories[key] ?? (top, [], [])
+                var repo = repositories[key] ?? (key, top, [], [])
                 repo.names.formUnion(names); repo.worktrees.insert(top)
                 repositories[key] = repo
             } catch {
@@ -236,6 +389,30 @@ enum CodeActivityScanner {
                     let field = String(decoding: record, as: UTF8.self)
                     if field.hasPrefix("worktree ") { worktrees.insert(String(field.dropFirst(9))) }
                 }
+                if let baselineStore {
+                    if var baseline = baselineStore.load(commonPath: repo.common, day: day.start, zone: zone) {
+                        activity.committed = baseline.committed
+                        var changed = false
+                        for path in worktrees.sorted() where !baseline.worktrees.contains(where: { $0.path == path }) {
+                            let head = try ActivityGit.text(path, ["rev-parse", "--verify", "--quiet", "HEAD"], acceptDifference: true).trimmingCharacters(in: .newlines)
+                            baseline.worktrees.append(try baselineStore.snapshot(path: path, head: head, commonPath: repo.common, day: day.start, zone: zone))
+                            changed = true
+                        }
+                        if changed { try baselineStore.save(baseline, commonPath: repo.common, day: day.start, zone: zone) }
+                        for worktree in baseline.worktrees where worktrees.contains(worktree.path) {
+                            activity.uncommitted = activity.uncommitted + (try baselineStore.activity(since: worktree, commonPath: repo.common, day: day.start, zone: zone))
+                        }
+                    } else {
+                        let worktreeBaselines = try worktrees.sorted().map { path -> CodeActivityWorktreeBaseline in
+                            let head = try ActivityGit.text(path, ["rev-parse", "--verify", "--quiet", "HEAD"], acceptDifference: true).trimmingCharacters(in: .newlines)
+                            return try baselineStore.snapshot(path: path, head: head, commonPath: repo.common, day: day.start, zone: zone)
+                        }
+                        let baseline = CodeActivityBaseline(version: 1, dayStart: day.start.timeIntervalSince1970, timeZoneIdentifier: zone.identifier, committed: activity.committed, worktrees: worktreeBaselines)
+                        try baselineStore.save(baseline, commonPath: repo.common, day: day.start, zone: zone)
+                    }
+                    results.append(activity)
+                    continue
+                }
                 for path in worktrees.sorted() {
                     let head = try ActivityGit.text(path, ["rev-parse", "--verify", "--quiet", "HEAD"], acceptDifference: true).trimmingCharacters(in: .newlines)
                     var extraFiles = Data()
@@ -271,13 +448,14 @@ final class CodeActivityClient {
     private let queue = DispatchQueue(label: "local.codexquota.code-activity", qos: .utility)
     private var busy = false
     private let cache = CodeActivityScanner.Cache()
+    private let baselineStore = CodeActivityBaselineStore()
     var onResult: ((Result<CodeActivitySnapshot, Error>) -> Void)?
     func refresh(zone: TimeZone = displayTimeZone) {
         // Called only on the main queue; never enqueue overlapping polls.
         guard !busy else { return }
         busy = true
         queue.async {
-            let result = Result { CodeActivityScanner.scan(projects: try CodexProjects.read(), zone: zone, cache: self.cache) }
+            let result = Result { CodeActivityScanner.scan(projects: try CodexProjects.read(), zone: zone, cache: self.cache, baselineStore: self.baselineStore) }
             DispatchQueue.main.async { self.busy = false; self.onResult?(result) }
         }
     }

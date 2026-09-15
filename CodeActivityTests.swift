@@ -50,7 +50,7 @@ func runCodeActivityTests() throws {
     try write("sample.py", "temporary\nextra\nkeep\n")
     try git(["add", "sample.py"])
     try write("sample.py", "new\nextra\nchanged\n")
-    try write("new\tfile.py", "one\ntwo")
+    try write("new\tfile.py", "one\ntwo\n")
     try write("dist/bundle.js", "ignored\n")
     try write("node_modules/demo/index.js", "ignored\n")
     try write("README.md", "Still ignored\n")
@@ -61,6 +61,18 @@ func runCodeActivityTests() throws {
     try expect(snapshot.committed == CodeLineCounts(added: 1, modified: 1), "only today's committed source lines: \(snapshot.committed)")
     try expect(snapshot.uncommitted == CodeLineCounts(added: 2, modified: 1), "working copy, untracked, no double staged count: \(snapshot.uncommitted)")
 
+    let baselineRoot = directory.appendingPathComponent("activity-baselines")
+    let baselineStore = CodeActivityBaselineStore(root: baselineRoot)
+    let initialDaily = CodeActivityScanner.scan(projects: linked, date: date, zone: zone, baselineStore: baselineStore)
+    try expect(initialDaily.committed == snapshot.committed && initialDaily.uncommitted == CodeLineCounts(), "old dirty files establish a zero daily baseline")
+    try write("sample.py", "latest\nextra\nchanged\n")
+    try write("new\tfile.py", "one\ntwo\nthree\n")
+    try write("after.swift", "fresh\n")
+    let liveDaily = CodeActivityScanner.scan(projects: linked, date: date, zone: zone, baselineStore: baselineStore)
+    try expect(liveDaily.uncommitted == CodeLineCounts(added: 2, modified: 1), "only edits after today's baseline count: \(liveDaily.uncommitted)")
+    let restartedDaily = CodeActivityScanner.scan(projects: linked, date: date, zone: zone, baselineStore: CodeActivityBaselineStore(root: baselineRoot))
+    try expect(restartedDaily.total == liveDaily.total, "daily baseline survives app restart")
+
     // A commit at the next midnight is excluded, while the previous commit remains reachable.
     try git(["reset", "--hard", "HEAD"])
     try write("sample.py", "tomorrow\nextra\nkeep\n")
@@ -68,6 +80,9 @@ func runCodeActivityTests() throws {
     try git(["commit", "-m", "tomorrow"], date: "2026-09-13T00:00:00+08:00")
     let boundary = CodeActivityScanner.scan(projects: linked, date: date, zone: zone)
     try expect(boundary.committed == snapshot.committed, "next day excluded without pruning earlier history")
+    let nextDay = ISO8601DateFormatter().date(from: "2026-09-13T12:00:00+08:00")!
+    let resetDaily = CodeActivityScanner.scan(projects: linked, date: nextDay, zone: zone, baselineStore: baselineStore)
+    try expect(resetDaily.uncommitted == CodeLineCounts(), "a new day establishes a fresh working-copy baseline")
 
     let worktree = directory.appendingPathComponent("linked-tree")
     try git(["worktree", "add", "--detach", worktree.path, "HEAD"])
@@ -96,5 +111,5 @@ func runCodeActivityTests() throws {
     try write("unborn/test.swift", "live\nsecond\n")
     let initial = CodeActivityScanner.scan(projects: [CodeProject(name: "Unborn", roots: [unborn.path])], date: date, zone: zone)
     try expect(!initial.incomplete && initial.total == CodeLineCounts(added: 2), "unborn repository uses current contents: \(initial.repositories)")
-    print("Code activity tests passed: replacements, source scope, project discovery, time zones/DST, shared roots, staged/unstaged edits, new files, binary exclusion, midnight boundaries, worktrees, caching and unborn repositories.")
+    print("Code activity tests passed: replacements, source scope, project discovery, time zones/DST, daily persistent baselines, shared roots, staged/unstaged edits, new files, binary exclusion, midnight boundaries, worktrees, caching and unborn repositories.")
 }
