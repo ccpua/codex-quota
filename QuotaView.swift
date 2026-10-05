@@ -57,6 +57,8 @@ struct QuotaDisplayState {
     var installingUpdate = false
     var codeActivity: CodeActivitySnapshot?
     var codeActivityError: String?
+    var tokenUsage: DailyTokenUsage?
+    var tokenUsageError: String?
     var remaining: Int? { windows.map({ $0.remaining }).min() }
     var menuTitle: String {
         let update = availableVersion == nil ? "" : " ↑"
@@ -92,11 +94,11 @@ private final class MembershipBadge: NSView {
     let available: Bool
     private let font = NSFont.systemFont(ofSize: 9, weight: .semibold)
 
-    init(plan: String?) {
+    init(plan: String?, x: CGFloat) {
         title = membershipPlanLabel(plan)
         available = plan != nil
         let width = min(84, max(32, ceil((title as NSString).size(withAttributes: [.font: font]).width) + 16))
-        super.init(frame: NSRect(x: 82, y: 14, width: width, height: 20))
+        super.init(frame: NSRect(x: x, y: 14, width: width, height: 20))
         toolTip = tr("会员计划", "Membership plan") + " · " + (available ? title : tr("暂未获取", "Unavailable"))
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
@@ -117,6 +119,18 @@ private final class MembershipBadge: NSView {
 
 private let primaryInk = NSColor.labelColor
 private let secondaryInk = NSColor.secondaryLabelColor
+private enum QuotaTypography {
+    static let titleSize: CGFloat = 11
+    static let titleWeight: NSFont.Weight = .semibold
+    static var titleFont: NSFont { .systemFont(ofSize: titleSize, weight: titleWeight) }
+    static let titleColor = primaryInk
+}
+private final class SectionTitleMarker: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        quotaAccent(80).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 1.5, yRadius: 1.5).fill()
+    }
+}
 private func quotaIsDark(_ appearance: NSAppearance = .currentDrawing()) -> Bool {
     appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
 }
@@ -135,8 +149,8 @@ func drawQuotaSurface(_ bounds: NSRect, radius: CGFloat) {
     shape.addClip()
     let dark = quotaIsDark()
     let gradient = dark
-        ? NSGradient(starting: NSColor(srgbRed: 0.12, green: 0.135, blue: 0.15, alpha: 0.97), ending: NSColor(srgbRed: 0.065, green: 0.073, blue: 0.084, alpha: 0.97))!
-        : NSGradient(starting: NSColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 0.98), ending: NSColor(srgbRed: 0.91, green: 0.93, blue: 0.95, alpha: 0.98))!
+        ? NSGradient(starting: NSColor(srgbRed: 0.105, green: 0.12, blue: 0.135, alpha: 1), ending: NSColor(srgbRed: 0.085, green: 0.098, blue: 0.112, alpha: 1))!
+        : NSGradient(starting: NSColor(srgbRed: 0.985, green: 0.99, blue: 0.995, alpha: 1), ending: NSColor(srgbRed: 0.955, green: 0.965, blue: 0.975, alpha: 1))!
     gradient.draw(in: bounds, angle: 90)
     (dark ? NSColor.white.withAlphaComponent(0.13) : NSColor.black.withAlphaComponent(0.12)).setStroke()
     let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: radius - 0.5, yRadius: radius - 0.5)
@@ -226,27 +240,11 @@ private final class CodeActivityMetricView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let dark = quotaIsDark()
-        let card = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
-        NSGraphicsContext.saveGraphicsState()
-        card.addClip()
-        let top = accent.withAlphaComponent(dark ? 0.20 : 0.13)
-        let bottom = accent.withAlphaComponent(dark ? 0.055 : 0.025)
-        NSGradient(starting: top, ending: bottom)!.draw(in: bounds, angle: 90)
-
-        // A soft oversized glow gives each metric a distinct visual identity.
-        let glowRect = NSRect(x: bounds.maxX - 29, y: -19, width: 46, height: 46)
-        let glow = NSBezierPath(ovalIn: glowRect)
-        accent.withAlphaComponent(dark ? 0.10 : 0.07).setFill(); glow.fill()
-
-        let highlight = NSBezierPath()
-        highlight.move(to: NSPoint(x: 10, y: 1))
-        highlight.line(to: NSPoint(x: bounds.width - 10, y: 1))
-        highlight.lineWidth = 1; highlight.lineCapStyle = .round
-        accent.withAlphaComponent(dark ? 0.32 : 0.22).setStroke(); highlight.stroke()
-        NSGraphicsContext.restoreGraphicsState()
-
-        accent.withAlphaComponent(dark ? 0.40 : 0.30).setStroke()
-        card.lineWidth = 0.8; card.stroke()
+        let card = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 9, yRadius: 9)
+        (dark ? NSColor.white.withAlphaComponent(0.045) : NSColor.white.withAlphaComponent(0.72)).setFill()
+        card.fill()
+        (dark ? NSColor.white.withAlphaComponent(0.07) : NSColor.black.withAlphaComponent(0.045)).setStroke()
+        card.lineWidth = 0.5; card.stroke()
 
         let titleFont = NSFont.systemFont(ofSize: 8.5, weight: .medium)
         let titleHeight = (title as NSString).size(withAttributes: [.font: titleFont]).height
@@ -255,8 +253,8 @@ private final class CodeActivityMetricView: NSView {
         (title as NSString).draw(at: NSPoint(x: iconRect.maxX + 3, y: 8), withAttributes: [.font: titleFont, .foregroundColor: secondaryInk])
 
         let number = value.map(codeActivityNumber) ?? "—"
-        let fontSize: CGFloat = number.count >= 5 ? 15 : 19
-        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .bold)
+        let fontSize: CGFloat = number.count >= 5 ? 15 : 20
+        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .semibold)
         let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .left
         (number as NSString).draw(in: NSRect(x: 8, y: 27, width: bounds.width - 13, height: 24), withAttributes: [
             .font: numberFont,
@@ -444,6 +442,58 @@ private final class ForecastEyeButton: QuotaIconButton {
     }
 }
 
+private final class OpenSourcePlaque: NSButton {
+    static let projectURL = URL(string: "https://github.com/ccpua/codex-quota")!
+    private var tracking: NSTrackingArea?
+    private var hovering = false
+    override var isFlipped: Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        title = ""; isBordered = false
+        toolTip = tr("打开 GitHub 项目", "Open the GitHub project")
+        setAccessibilityLabel("github.com/ccpua/codex-quota")
+        target = self; action = #selector(openProject)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .cursorUpdate, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area); tracking = area
+        // The panel rebuilds on refresh; retain hover feedback under a stationary pointer.
+        if let window {
+            hovering = !isHiddenOrHasHiddenAncestor && window.isVisible
+                && window.frame.contains(NSEvent.mouseLocation)
+                && bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+            if hovering { NSCursor.pointingHand.set() }
+        }
+        needsDisplay = true
+    }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.pointingHand.set() }
+    override func mouseEntered(with event: NSEvent) { hovering = true; NSCursor.pointingHand.set(); needsDisplay = true }
+    override func mouseExited(with event: NSEvent) { hovering = false; NSCursor.arrow.set(); needsDisplay = true }
+    @objc private func openProject() { NSWorkspace.shared.open(Self.projectURL) }
+    override func draw(_ dirtyRect: NSRect) {
+        let address = "github.com/ccpua/codex-quota" as NSString
+        let naturalWidth = address.size(withAttributes: [.font: NSFont.systemFont(ofSize: 9, weight: .light)]).width
+        let font = NSFont.systemFont(ofSize: min(9, 9 * bounds.width / naturalWidth), weight: .light)
+        let size = address.size(withAttributes: [.font: font])
+        let origin = NSPoint(x: bounds.width - size.width, y: (bounds.height - size.height) / 2)
+        let dark = quotaIsDark()
+        // A dark upper lip and light lower lip make the lettering read as recessed.
+        address.draw(at: NSPoint(x: origin.x, y: origin.y + 0.35), withAttributes: [.font: font, .foregroundColor: NSColor.white.withAlphaComponent(dark ? 0.07 : 0.6)])
+        address.draw(at: NSPoint(x: origin.x, y: origin.y - 0.25), withAttributes: [.font: font, .foregroundColor: NSColor.black.withAlphaComponent(dark ? 0.3 : 0.07)])
+        let active = hovering || isHighlighted
+        let ink = dark
+            ? NSColor(srgbRed: active ? 0.67 : 0.50, green: active ? 0.81 : 0.68, blue: active ? 1 : 0.90, alpha: 1)
+            : NSColor(srgbRed: active ? 0.20 : 0.36, green: active ? 0.38 : 0.48, blue: active ? 0.68 : 0.65, alpha: 1)
+        address.draw(at: origin, withAttributes: [.font: font, .foregroundColor: ink, .underlineStyle: active ? NSUnderlineStyle.single.rawValue : 0])
+    }
+}
+
 final class QuotaCardView: NSView {
     override var isFlipped: Bool { true }
     let state: QuotaDisplayState
@@ -454,6 +504,7 @@ final class QuotaCardView: NSView {
     private(set) var hideButton: NSButton!
     private(set) var reasonButton: NSButton?
     private(set) var updateButton: NSButton?
+    private(set) var openSourceButton: NSButton!
     var onShowReason: ((NSButton) -> Void)?
     var onDrag: ((NSEvent) -> Void)?
 
@@ -465,29 +516,32 @@ final class QuotaCardView: NSView {
         // glyphs between the separators rather than centering those frames.
         let benefitHeight: CGFloat = 60
         let updateHeight: CGFloat = state.availableVersion == nil ? 0 : 26
-        let codeHeight: CGFloat = 96
-        contentHeight = 52 + CGFloat(blockCount) * 122 + errorHeight + benefitHeight + codeHeight + updateHeight + 44
+        let codeHeight: CGFloat = 100
+        let headerHeight: CGFloat = 52
+        contentHeight = headerHeight + CGFloat(blockCount) * 122 + errorHeight + benefitHeight + codeHeight + updateHeight + 44
         super.init(frame: NSRect(x: 0, y: 0, width: 280, height: contentHeight))
         setAccessibilityElement(false)
-        let brand = text("CODEX", x: 20, y: 17, width: 60, size: 10, color: primaryInk, weight: .semibold)
-        brand.attributedStringValue = NSAttributedString(string: "CODEX", attributes: [.font: brand.font!, .foregroundColor: primaryInk, .kern: 1.8])
-        addSubview(MembershipBadge(plan: state.planType))
+        let brand = text("CODEX", x: 20, y: 16, width: 60, size: 12, color: primaryInk, weight: .bold)
+        brand.attributedStringValue = NSAttributedString(string: "CODEX", attributes: [.font: brand.font!, .foregroundColor: primaryInk, .kern: 1.4])
+        let badgeX = brand.frame.minX + ceil(brand.attributedStringValue.size().width) + 8
+        addSubview(MembershipBadge(plan: state.planType, x: badgeX))
         pinButton = icon("pin\(state.pinned ? ".fill" : "")", label: state.pinned ? tr("取消置顶", "Unpin") : tr("置顶小窗", "Pin panel"), x: 175, y: 10, target: target, action: pin)
         pinButton.contentTintColor = state.pinned ? quotaAccent(80) : secondaryInk
         moreButton = icon("ellipsis", label: tr("更多选项", "More options"), x: 207, y: 10, target: target, action: more)
         hideButton = icon("xmark", label: tr("隐藏小窗", "Hide panel"), x: 239, y: 10, target: target, action: hide)
         if state.windows.isEmpty {
-            text(tr("账户剩余额度", "Remaining quota"), x: 20, y: 53, width: 240, size: 11, color: secondaryInk)
-            text("—", x: 18, y: 73, width: 160, height: 50, size: 39, weight: .medium)
-            text(state.refreshing ? tr("正在连接你的 Codex…", "Connecting to Codex…") : tr("暂无可用额度数据", "No quota data available"), x: 20, y: 142, width: 240, size: 11, color: secondaryInk)
+            quotaHeading(tr("账户剩余额度", "Remaining quota"), y: headerHeight + 1, showAddress: true)
+            text("—", x: 18, y: headerHeight + 21, width: 160, height: 50, size: 39, weight: .medium)
+            text(state.refreshing ? tr("正在连接你的 Codex…", "Connecting to Codex…") : tr("暂无可用额度数据", "No quota data available"), x: 20, y: headerHeight + 90, width: 240, size: 11, color: secondaryInk)
         }
         let dateFormat = displayFormatter("M/d HH:mm")
+        let addressWindow = state.windows.firstIndex { $0.minutes == 10080 } ?? 0
         for (index, window) in state.windows.enumerated() {
-            let y = 53 + CGFloat(index) * 122
+            let y = headerHeight + 1 + CGFloat(index) * 122
             let name = window.name.replacingOccurrences(of: "额度", with: "")
-            text(tr("\(name)剩余", "\(name) remaining"), x: 20, y: y, width: 170, size: 11, color: secondaryInk)
-            let number = text("\(window.remaining)", x: 18, y: y + 17, width: 140, height: 49, size: 39, weight: .medium)
-            number.font = .monospacedDigitSystemFont(ofSize: 39, weight: .medium)
+            quotaHeading(tr("\(name)剩余", "\(name) remaining"), y: y, showAddress: index == addressWindow)
+            let number = text("\(window.remaining)", x: 18, y: y + 15, width: 140, height: 56, size: 44, weight: .semibold)
+            number.font = .monospacedDigitSystemFont(ofSize: 44, weight: .semibold)
             let numberWidth = (number.stringValue as NSString).size(withAttributes: [.font: number.font!]).width
             text("%", x: 21 + numberWidth, y: y + 36, width: 26, height: 26, size: 18, color: secondaryInk)
             let condition = state.error != nil ? tr("待更新", "Stale") : window.remaining == 0 ? tr("已用尽", "Used up") : window.remaining <= 10 ? tr("即将用尽", "Very low") : window.remaining <= 25 ? tr("额度偏低", "Low") : tr("可用", "Available")
@@ -505,7 +559,7 @@ final class QuotaCardView: NSView {
                 text(tr("暂未提供重置时间", "Reset time unavailable"), x: 20, y: y + 91, width: 240, size: 10, color: secondaryInk)
             }
         }
-        let errorY = 52 + CGFloat(blockCount) * 122
+        let errorY = headerHeight + CGFloat(blockCount) * 122
         if let error = state.error {
             let message = text(usesEnglish ? "Quota unavailable. Check your connection and Codex login, then refresh." : error, x: 20, y: errorY, width: 240, height: 39, size: 10, color: quotaAccent(20))
             message.maximumNumberOfLines = 2; message.lineBreakMode = .byWordWrapping; message.toolTip = message.stringValue
@@ -515,7 +569,7 @@ final class QuotaCardView: NSView {
         let predictionTitleY = benefitY + 13
         let predictionDetailsY = predictionTitleY + 21
         let benefitSeparator = NSBox(frame: NSRect(x: 20, y: benefitY, width: 240, height: 1)); benefitSeparator.boxType = .separator; addSubview(benefitSeparator)
-        text(tr("下次福利重置（预测）", "Next bonus reset (est.)"), x: 20, y: predictionTitleY, width: 150, size: 10, color: secondaryInk, weight: .medium)
+        sectionTitle(tr("下次福利重置（预测）", "Next bonus reset (est.)"), y: predictionTitleY, width: 150)
         if let reset = state.benefitReset {
             let date = text(benefitResetDateLabel(reset), x: 178, y: predictionTitleY, width: 82, size: 10, color: primaryInk)
             date.alignment = .right
@@ -543,7 +597,23 @@ final class QuotaCardView: NSView {
         let codeY = benefitY + benefitHeight
         let codeSeparator = NSBox(frame: NSRect(x: 20, y: codeY, width: 240, height: 1))
         codeSeparator.boxType = .separator; addSubview(codeSeparator)
-        text(tr("今日代码变更", "Today's code changes"), x: 20, y: codeY + 10, width: 240, size: 11, weight: .medium)
+        sectionTitle(tr("今日代码变更", "Today's code changes"), y: codeY + 10, width: 132)
+        let tokenLabel = text(tr("token消耗", "Tokens") + " " + tokenUsageLabel(state.tokenUsage?.total), x: 154, y: codeY + 10, width: 106, size: 10, color: secondaryInk, weight: .medium)
+        tokenLabel.alignment = .right
+        let tokenAccent = NSColor(name: nil) { appearance in
+            quotaIsDark(appearance)
+                ? NSColor(srgbRed: 0.64, green: 0.75, blue: 0.98, alpha: 1)
+                : NSColor(srgbRed: 0.28, green: 0.40, blue: 0.73, alpha: 1)
+        }
+        let tokenText = NSMutableAttributedString(string: tr("token消耗", "Tokens") + " ", attributes: [.font: tokenLabel.font!, .foregroundColor: secondaryInk])
+        tokenText.append(NSAttributedString(string: tokenUsageLabel(state.tokenUsage?.total), attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold), .foregroundColor: state.tokenUsage == nil ? secondaryInk : tokenAccent]))
+        let tokenParagraph = NSMutableParagraphStyle()
+        tokenParagraph.alignment = .right; tokenParagraph.lineBreakMode = .byTruncatingTail
+        tokenText.addAttribute(.paragraphStyle, value: tokenParagraph, range: NSRange(location: 0, length: tokenText.length))
+        tokenLabel.attributedStringValue = tokenText
+        tokenLabel.toolTip = tr("北京时间今日的本机 Token 总量（输入 + 输出，含缓存输入）；每 5 秒刷新。", "Today's local tokens in Beijing time (input + output, including cached input); refreshed every 5 seconds.")
+            + (state.tokenUsage.map { "\n\($0.total) tokens" } ?? "")
+            + (state.tokenUsageError.map { "\n" + $0 } ?? "")
         let codeCounts = state.codeActivity?.total
         let status: String?
         if state.codeActivityError != nil { status = tr("刷新失败，显示上次结果", "Refresh failed; showing the previous result") }
@@ -558,12 +628,12 @@ final class QuotaCardView: NSView {
             (tr("删除", "Deleted"), codeCounts?.deleted, red, .deleted)
         ]
         for (index, value) in values.enumerated() {
-            let card = CodeActivityMetricView(frame: NSRect(x: 20 + CGFloat(index) * 85, y: codeY + 32, width: 70, height: 56), title: value.0, value: value.1, accent: value.2, kind: value.3, status: status)
+            let card = CodeActivityMetricView(frame: NSRect(x: 20 + CGFloat(index) * 83, y: codeY + 36, width: 74, height: 54), title: value.0, value: value.1, accent: value.2, kind: value.3, status: status)
             addSubview(card)
         }
         let footerY = codeY + codeHeight
         let separator = NSBox(frame: NSRect(x: 20, y: footerY, width: 240, height: 1)); separator.boxType = .separator; addSubview(separator)
-        text(state.freshness, x: 20, y: footerY + 13, width: 202, size: 10, color: secondaryInk)
+        text(state.freshness, x: 20, y: footerY + 13, width: 202, size: 9, color: secondaryInk)
         refreshButton = icon("arrow.clockwise", label: tr("立即刷新", "Refresh now") + " · " + refreshIntervalLabel, x: 235, y: footerY + 6, target: target, action: refresh)
         refreshButton.isEnabled = !state.refreshing
 
@@ -583,7 +653,6 @@ final class QuotaCardView: NSView {
             updateButton?.contentTintColor = quotaAccent(80)
             updateButton?.isEnabled = !state.installingUpdate
         }
-
     }
     required init?(coder: NSCoder) { fatalError() }
     @objc private func showReason(_ sender: NSButton) { onShowReason?(sender) }
@@ -607,6 +676,23 @@ final class QuotaCardView: NSView {
             !$0.isHidden && $0.alphaValue > 0.01 && $0.bounds.contains($0.convert(point, from: self))
         }
     }
+    @discardableResult private func sectionTitle(_ string: String, y: CGFloat, width: CGFloat) -> NSTextField {
+        let marker = SectionTitleMarker(frame: NSRect(x: 20, y: y + 3, width: 3, height: 11))
+        marker.setAccessibilityElement(false)
+        addSubview(marker)
+        return text(string, x: 28, y: y, width: width - 8, size: QuotaTypography.titleSize, color: QuotaTypography.titleColor, weight: QuotaTypography.titleWeight)
+    }
+
+    private func quotaHeading(_ title: String, y: CGFloat, showAddress: Bool) {
+        let titleWidth = ceil((title as NSString).size(withAttributes: [.font: QuotaTypography.titleFont]).width) + 12
+        sectionTitle(title, y: y, width: titleWidth)
+        if showAddress {
+            let x = 20 + titleWidth + 10
+            openSourceButton = OpenSourcePlaque(frame: NSRect(x: x, y: y, width: 260 - x, height: 18))
+            addSubview(openSourceButton)
+        }
+    }
+
     @discardableResult private func text(_ string: String, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat = 18, size: CGFloat, color: NSColor = primaryInk, weight: NSFont.Weight = .regular) -> NSTextField {
         let field = NSTextField(labelWithString: string)
         field.font = .systemFont(ofSize: size, weight: weight); field.textColor = color
@@ -634,7 +720,8 @@ final class ForecastReasonController: NSViewController {
         super.init(nibName: nil, bundle: nil)
         let width: CGFloat = 288
         let title = NSTextField(labelWithString: tr("预测理由", "Forecast reason"))
-        title.font = .systemFont(ofSize: 12, weight: .semibold)
+        title.font = QuotaTypography.titleFont
+        title.textColor = QuotaTypography.titleColor
         title.frame = NSRect(x: 18, y: 0, width: width - 36, height: 20)
         reasonText.isEditable = false
         reasonText.isSelectable = true

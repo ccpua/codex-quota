@@ -1,6 +1,14 @@
-import json, subprocess, selectors, time
+import json, os, pathlib, subprocess, selectors, time
 
-p = subprocess.Popen(['/Applications/ChatGPT.app/Contents/Resources/codex', 'app-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+candidates = [str(root / app / 'Contents/Resources' / relative)
+              for root in (pathlib.Path('/Applications'), pathlib.Path.home() / 'Applications')
+              for app in ('ChatGPT.app', 'Codex.app')
+              for relative in ('codex-cli/bin/codex', 'codex')]
+candidates += ['/opt/homebrew/bin/codex', '/usr/local/bin/codex']
+executable = next((path for path in candidates if os.path.isfile(path) and os.access(path, os.X_OK)), None)
+if executable is None:
+    raise RuntimeError('Codex executable not found. Install Codex and sign in first.')
+p = subprocess.Popen([executable, 'app-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
 def send(value):
     p.stdin.write(json.dumps(value) + '\n')
     p.stdin.flush()

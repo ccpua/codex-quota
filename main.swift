@@ -123,7 +123,13 @@ final class QuotaClient {
         if ready { requestQuota() }
     }
     private func start() {
-        let candidates = ["/Applications/ChatGPT.app/Contents/Resources/codex", "/Applications/Codex.app/Contents/Resources/codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex"]
+        // New desktop builds package the CLI inside codex-cli; keep the legacy layout supported.
+        let applicationRoots = ["/Applications", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications").path]
+        let candidates = applicationRoots.flatMap { root in
+            ["ChatGPT.app", "Codex.app"].flatMap { app in
+                ["codex-cli/bin/codex", "codex"].map { "\(root)/\(app)/Contents/Resources/\($0)" }
+            }
+        } + ["/opt/homebrew/bin/codex", "/usr/local/bin/codex"]
         guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             report(.failure(Failure(errorDescription: "未找到 Codex，请先安装并登录。"))); return
         }
@@ -232,6 +238,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     let updateClient = UpdateClient()
     let codeActivityClient = CodeActivityClient()
     var codeActivityTimer: Timer?
+    let tokenUsageClient = TokenUsageClient()
+    var tokenUsageTimer: Timer?
     var statusItem: NSStatusItem!
     var panel: NSPanel!
     var timer: Timer?
@@ -248,7 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     var menuOpen = false
     var reasonPopover: NSPopover?
     var resultSucceeded = false
-    let smokeTest = CommandLine.arguments.contains("--smoke-test")
+    let smokeTest = CommandLine.arguments.contains("--smoke-test") || CommandLine.arguments.contains("--panel-behavior-test")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -359,8 +367,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
             self.render()
         }
+        tokenUsageClient.onResult = { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let snapshot):
+                guard Date() >= snapshot.day.start && Date() < snapshot.day.end else { self.refreshTokenUsage(); return }
+                self.state.tokenUsage = snapshot; self.state.tokenUsageError = nil
+            case .failure(let error): self.state.tokenUsageError = error.localizedDescription
+            }
+            self.render()
+        }
         render()
         if !smokeTest {
+            refreshTokenUsage()
+            let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.refreshTokenUsage() }
+            timer.tolerance = 0.5
+            tokenUsageTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
             panel.orderFrontRegardless()
             refreshCodeActivity()
             let activityTimer = Timer(timeInterval: 10, repeats: true) { [weak self] _ in self?.refreshCodeActivity() }
@@ -395,6 +418,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
     func applicationWillTerminate(_ notification: Notification) {
         codeActivityTimer?.invalidate()
+        tokenUsageTimer?.invalidate()
         timer?.invalidate(); benefitTimer?.invalidate(); updateTimer?.invalidate(); transitionTimer?.invalidate(); client.stop(); benefitClient.stop(); updateClient.stop(); terminationSignal?.cancel()
         hoverWork?.cancel()
         if !smokeTest { savePosition() }
@@ -437,7 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         guard !state.refreshing else { return }
         state.refreshing = true; render(); client.refresh()
     }
-    func showPanel() { setExpanded(false); panel.orderFrontRegardless() }
+    func showPanel() { setExpanded(!autoCollapseEnabled); panel.orderFrontRegardless() }
     func savePosition() { UserDefaults.standard.set([capsuleOrigin.x, capsuleOrigin.y], forKey: "capsuleOrigin") }
     @objc func togglePanel() {
         reasonPopover?.close()
@@ -447,6 +471,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     @objc func togglePinned() {
         state.pinned.toggle(); UserDefaults.standard.set(state.pinned, forKey: "pinned")
         panel.level = state.pinned ? .floating : .normal; render()
+    }
+    @objc func toggleAutoCollapse() {
+        hoverWork?.cancel(); hoverWork = nil
+        UserDefaults.standard.set(!autoCollapseEnabled, forKey: "autoCollapseEnabled")
+        if !autoCollapseEnabled { setExpanded(true) }
+        else { handleHover(panel.frame.contains(NSEvent.mouseLocation)) }
     }
     @objc func quit() { NSApp.terminate(nil) }
     @objc func statusClicked() {
@@ -461,7 +491,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         makeMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.maxY + 4), in: sender)
         menuOpen = false; handleHover(panel.frame.contains(NSEvent.mouseLocation))
     }
-    @objc func checkForUpdates() { performUpdateCheck(showResult: true) }
+    @objc func checkForUpdates() {
+        if let available = state.availableVersion, let version = AppVersion(available) {
+            downloadAndInstall(version)
+        } else {
+            performUpdateCheck(showResult: true)
+        }
+    }
     func performUpdateCheck(showResult: Bool) {
         guard !state.checkingForUpdate && !state.installingUpdate else { return }
         state.checkingForUpdate = true
@@ -475,7 +511,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 self.state.availableVersion = remote > current ? remote.string : nil
                 self.render()
                 if showResult {
-                    if remote > current { self.offerUpdate(remote) }
+                    if remote > current { self.downloadAndInstall(remote) }
                     else { self.showUpdateMessage(title: tr("已是最新版本", "You're up to date"), message: tr("当前版本为 \(appVersionLabel(currentAppVersion))。", "Codex Quota \(appVersionLabel(currentAppVersion)) is the latest version.")) }
                 }
             case .failure(let error):
@@ -483,15 +519,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 if showResult { self.showUpdateMessage(title: tr("无法检查更新", "Unable to Check for Updates"), message: error.localizedDescription) }
             }
         }
-    }
-    func offerUpdate(_ version: AppVersion) {
-        let alert = NSAlert()
-        alert.messageText = tr("发现新版本 \(appVersionLabel(version.string))", "Codex Quota \(appVersionLabel(version.string)) is available")
-        alert.informativeText = tr("当前版本为 \(appVersionLabel(currentAppVersion))。是否下载并安装更新？", "You are using \(appVersionLabel(currentAppVersion)). Download and install the update now?")
-        alert.addButton(withTitle: tr("更新", "Update"))
-        alert.addButton(withTitle: tr("稍后", "Later"))
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn { downloadAndInstall(version) }
     }
     func downloadAndInstall(_ version: AppVersion) {
         guard !state.installingUpdate else { return }
@@ -621,6 +648,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         refreshCodeActivity()
     }
     @objc func refreshCodeActivity() {
+        refreshTokenUsage()
         if let snapshot = state.codeActivity,
            snapshot.timeZone != displayTimeZone || !CodeActivityScanner.dayInterval(Date(), zone: displayTimeZone).contains(snapshot.date) {
             state.codeActivity = nil
@@ -629,12 +657,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         codeActivityClient.refresh()
     }
+    func refreshTokenUsage() {
+        if let snapshot = state.tokenUsage, Date() < snapshot.day.start || Date() >= snapshot.day.end {
+            state.tokenUsage = nil; state.tokenUsageError = nil; render()
+        }
+        tokenUsageClient.refresh()
+    }
     func makeMenu() -> NSMenu {
         let menu = NSMenu()
-        for (title, action) in [(panel.isVisible ? tr("隐藏小窗", "Hide panel") : tr("显示小窗", "Show panel"), #selector(togglePanel)), (tr("立即刷新", "Refresh now"), #selector(refresh)), (tr("小窗始终置顶", "Always on top"), #selector(togglePinned))] {
+        for (title, action) in [(panel.isVisible ? tr("隐藏小窗", "Hide panel") : tr("显示小窗", "Show panel"), #selector(togglePanel)), (tr("立即刷新", "Refresh now"), #selector(refresh)), (tr("小窗始终置顶", "Always on top"), #selector(togglePinned)), (tr("自动收起浮窗", "Auto-collapse floating window"), #selector(toggleAutoCollapse))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             if action == #selector(togglePinned) { item.state = state.pinned ? .on : .off }
+            if action == #selector(toggleAutoCollapse) { item.state = autoCollapseEnabled ? .on : .off }
             if action == #selector(refresh) { item.isEnabled = !state.refreshing }
             menu.addItem(item)
         }
@@ -666,8 +701,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func handleHover(_ inside: Bool) {
         hoverWork?.cancel()
         guard !dragging && !menuOpen && reasonPopover == nil else { return }
+        if !autoCollapseEnabled {
+            if panel.isVisible { setExpanded(true) }
+            return
+        }
         let work = DispatchWorkItem { [weak self] in
             guard let self = self, !self.dragging, !self.menuOpen, self.reasonPopover == nil, self.panel.isVisible else { return }
+            guard autoCollapseEnabled else { self.setExpanded(true); return }
             let stillInside = self.panel.frame.contains(NSEvent.mouseLocation)
             if inside && stillInside { self.setExpanded(true, animated: true) }
             if !inside && !stillInside { self.setExpanded(false, animated: true) }
@@ -760,6 +800,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"), CommandLine.arguments.count > previewIndex + 1 {
     _ = NSApplication.shared
     try renderQuotaPreviews(to: URL(fileURLWithPath: CommandLine.arguments[previewIndex + 1]))
+} else if CommandLine.arguments.contains("--panel-behavior-test") {
+    _ = NSApplication.shared
+    let defaults = UserDefaults.standard
+    let original = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+    func setCollapse(_ enabled: Bool) {
+        var arguments = original; arguments["autoCollapseEnabled"] = enabled
+        defaults.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
+    }
+    let delegate = AppDelegate()
+    delegate.panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 96, height: 34), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    delegate.panel.isReleasedWhenClosed = false
+    delegate.surface = HoverSurface(frame: delegate.panel.contentView!.bounds)
+    delegate.panel.contentView = delegate.surface
+    delegate.surface.update(state: delegate.state, target: nil, refresh: nil, pin: nil, more: nil, hide: nil)
+    let screen = NSScreen.main!.visibleFrame
+    let pointer = NSEvent.mouseLocation
+    delegate.capsuleOrigin = NSPoint(x: pointer.x > screen.midX ? screen.minX + 10 : screen.maxX - 106,
+                                    y: pointer.y > screen.midY ? screen.minY + 34 : screen.maxY - 44)
+    defer {
+        delegate.hoverWork?.cancel(); delegate.transitionTimer?.invalidate()
+        delegate.panel.orderOut(nil)
+        defaults.setVolatileDomain(original, forName: UserDefaults.argumentDomain)
+    }
+    func checkMenu(_ expected: NSControl.StateValue) {
+        let item = delegate.makeMenu().items.first { $0.action == #selector(AppDelegate.toggleAutoCollapse) }
+        precondition(item?.state == expected)
+    }
+    setCollapse(false)
+    delegate.showPanel(); precondition(delegate.expanded)
+    delegate.handleHover(false); precondition(delegate.expanded)
+    delegate.togglePanel(); delegate.togglePanel(); precondition(delegate.expanded)
+    checkMenu(.off)
+    setCollapse(true)
+    checkMenu(.on)
+    precondition(!delegate.panel.frame.contains(NSEvent.mouseLocation))
+    delegate.handleHover(false)
+    RunLoop.main.run(until: Date().addingTimeInterval(1))
+    precondition(!delegate.expanded)
+    delegate.setExpanded(true)
+    delegate.handleHover(false)
+    setCollapse(false)
+    RunLoop.main.run(until: Date().addingTimeInterval(1))
+    precondition(delegate.expanded)
+    print("Passed: menu states, expanded mode, pointer exit, hide/reopen, automatic collapse and disabling a queued collapse.")
+} else if CommandLine.arguments.contains("--token-usage-test") {
+    try runTokenUsageTests()
+} else if CommandLine.arguments.contains("--token-usage-scan") {
+    let root = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+    print("Today's tokens: \(try TokenUsageScanner().scan(root: root).total)")
 } else if CommandLine.arguments.contains("--code-activity-test") {
     try runCodeActivityTests()
 } else if CommandLine.arguments.contains("--code-activity-scan") {
@@ -786,7 +875,7 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     precondition(updateDownloadURL(for: "1.2.3")?.absoluteString == "https://github.com/ccpua/codex-quota/releases/download/v1.2.3/Codex-Quota-1.2.3-arm64.dmg")
     precondition(updateDownloadURL(for: "v1.0.6")?.absoluteString == "https://github.com/ccpua/codex-quota/releases/download/v1.0.6/Codex-Quota-1.0.6-arm64.dmg")
     precondition(updateDownloadURL(for: "../bad") == nil)
-    precondition(currentAppVersion == "1.0.8")
+    precondition(currentAppVersion == "1.0.9")
     let planSnapshot = QuotaSnapshot(["rateLimitsByLimitId": ["codex": ["planType": " Plus ", "primary": window(63, 10080)], "other": ["planType": "pro"]], "rateLimits": ["planType": "free"]])
     precondition(planSnapshot.planType == "plus" && planSnapshot.windows.first?.remaining == 37)
     precondition(QuotaSnapshot(["rateLimits": ["planType": "pro"]]).planType == "pro")

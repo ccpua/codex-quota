@@ -4,6 +4,10 @@ enum DisplayTheme: String {
     case system, light, dark
 }
 
+var autoCollapseEnabled: Bool {
+    UserDefaults.standard.object(forKey: "autoCollapseEnabled") as? Bool ?? true
+}
+
 var displayTheme: DisplayTheme {
     DisplayTheme(rawValue: UserDefaults.standard.string(forKey: "displayTheme") ?? "system") ?? .system
 }

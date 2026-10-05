@@ -24,6 +24,7 @@ func renderQuotaPreviews(to directory: URL) throws {
         for (name, baseState) in states {
             var state = baseState
             if name != "loading" {
+                state.tokenUsage = DailyTokenUsage(day: DateInterval(start: now, duration: 86400), total: 4_196_906)
                 state.codeActivity = CodeActivitySnapshot(date: now, timeZone: displayTimeZone, projectCount: 11, repositories: [
                     CodeRepositoryActivity(path: "/Projects/example", projects: ["Example"], committed: CodeLineCounts(added: 102, modified: 13, deleted: 16), uncommitted: CodeLineCounts(added: name == "full" ? 1234567 : 528, modified: 109, deleted: 89))
                 ])
@@ -75,6 +76,14 @@ func renderQuotaPreviews(to directory: URL) throws {
             let filename = "\(theme == .aqua ? "light" : "dark")-\(name).png"
             try data.write(to: directory.appendingPathComponent(filename))
             checked += 1
+            if name == "normal" {
+                let event = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
+                view.card.openSourceButton.mouseEntered(with: event)
+                appearance.performAsCurrentDrawingAppearance { view.cacheDisplay(in: view.bounds, to: rep) }
+                try rep.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("link-hover-" + filename))
+                view.card.openSourceButton.mouseExited(with: event)
+                checked += 1
+            }
             if name == "normal", CommandLine.arguments.contains("--preview-motion") {
                 let event = NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
                 eye.mouseEntered(with: event)

@@ -1,7 +1,7 @@
 import AppKit
 
 var currentAppVersion: String {
-    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.8"
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.9"
 }
 private let updateVersionEndpoint = URL(string: "https://assets-dev-1412625299.cos.ap-guangzhou.myqcloud.com/codex-quota/config/codex_reset_version")!
 private let updateDownloadBase = URL(string: "https://github.com/ccpua/codex-quota/releases/download/")!
