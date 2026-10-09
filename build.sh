@@ -7,6 +7,8 @@ if [[ -e 'Codex Quota.app/Contents/MacOS/CodexQuotaWatcher' ]]; then
   unlink 'Codex Quota.app/Contents/MacOS/CodexQuotaWatcher'
 fi
 mkdir -p 'Codex Quota.app/Contents/Resources'
+cp Assets/github-mark.svg 'Codex Quota.app/Contents/Resources/GitHubMark.svg'
+cp Assets/OCTICONS-LICENSE.txt 'Codex Quota.app/Contents/Resources/OCTICONS-LICENSE.txt'
 swiftc IconRenderer.swift -o /private/tmp/codex-quota-icon-renderer -framework AppKit -module-cache-path build-cache -O
 /private/tmp/codex-quota-icon-renderer icon.svg 'Codex Quota.app/Contents/Resources/AppIcon.png'
 cp Info.plist 'Codex Quota.app/Contents/Info.plist'

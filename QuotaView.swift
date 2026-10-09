@@ -444,6 +444,8 @@ private final class ForecastEyeButton: QuotaIconButton {
 
 private final class OpenSourcePlaque: NSButton {
     static let projectURL = URL(string: "https://github.com/ccpua/codex-quota")!
+    // GitHub's Octicons mark; see the bundled OCTICONS-LICENSE.txt.
+    private static let githubMark: NSImage? = Bundle.main.url(forResource: "GitHubMark", withExtension: "svg").flatMap { NSImage(contentsOf: $0) }
     private var tracking: NSTrackingArea?
     private var hovering = false
     override var isFlipped: Bool { true }
@@ -451,8 +453,8 @@ private final class OpenSourcePlaque: NSButton {
     override init(frame: NSRect) {
         super.init(frame: frame)
         title = ""; isBordered = false
-        toolTip = tr("打开 GitHub 项目", "Open the GitHub project")
-        setAccessibilityLabel("github.com/ccpua/codex-quota")
+        toolTip = Self.projectURL.absoluteString
+        setAccessibilityLabel("GitHub · ccpua/codex-quota")
         target = self; action = #selector(openProject)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -477,20 +479,34 @@ private final class OpenSourcePlaque: NSButton {
     override func mouseExited(with event: NSEvent) { hovering = false; NSCursor.arrow.set(); needsDisplay = true }
     @objc private func openProject() { NSWorkspace.shared.open(Self.projectURL) }
     override func draw(_ dirtyRect: NSRect) {
-        let address = "github.com/ccpua/codex-quota" as NSString
-        let naturalWidth = address.size(withAttributes: [.font: NSFont.systemFont(ofSize: 9, weight: .light)]).width
-        let font = NSFont.systemFont(ofSize: min(9, 9 * bounds.width / naturalWidth), weight: .light)
-        let size = address.size(withAttributes: [.font: font])
+        let address = "ccpua / codex-quota" as NSString
+        func lettering(size: CGFloat, color: NSColor) -> NSAttributedString {
+            let text = NSMutableAttributedString(string: address as String, attributes: [.font: NSFont.systemFont(ofSize: size, weight: .regular), .foregroundColor: color])
+            text.addAttribute(.font, value: NSFont.systemFont(ofSize: size, weight: .bold), range: address.range(of: "codex-quota"))
+            text.addAttribute(.foregroundColor, value: secondaryInk, range: address.range(of: "/"))
+            return text
+        }
+        let fontSize: CGFloat = 11
+        let iconSide: CGFloat = 18
+        let iconSpacing = iconSide + 7
+        let naturalWidth = lettering(size: fontSize, color: .black).size().width
+        let fittedSize = min(fontSize, fontSize * max(1, bounds.width - iconSpacing) / naturalWidth)
+        let size = lettering(size: fittedSize, color: .black).size()
         let origin = NSPoint(x: bounds.width - size.width, y: (bounds.height - size.height) / 2)
         let dark = quotaIsDark()
-        // A dark upper lip and light lower lip make the lettering read as recessed.
-        address.draw(at: NSPoint(x: origin.x, y: origin.y + 0.35), withAttributes: [.font: font, .foregroundColor: NSColor.white.withAlphaComponent(dark ? 0.07 : 0.6)])
-        address.draw(at: NSPoint(x: origin.x, y: origin.y - 0.25), withAttributes: [.font: font, .foregroundColor: NSColor.black.withAlphaComponent(dark ? 0.3 : 0.07)])
         let active = hovering || isHighlighted
-        let ink = dark
-            ? NSColor(srgbRed: active ? 0.67 : 0.50, green: active ? 0.81 : 0.68, blue: active ? 1 : 0.90, alpha: 1)
-            : NSColor(srgbRed: active ? 0.20 : 0.36, green: active ? 0.38 : 0.48, blue: active ? 0.68 : 0.65, alpha: 1)
-        address.draw(at: origin, withAttributes: [.font: font, .foregroundColor: ink, .underlineStyle: active ? NSUnderlineStyle.single.rawValue : 0])
+        let ink = active
+            ? (dark ? NSColor(srgbRed: 0.67, green: 0.81, blue: 1, alpha: 1) : NSColor(srgbRed: 0.20, green: 0.38, blue: 0.68, alpha: 1))
+            : primaryInk
+        if let mark = Self.githubMark {
+            let tinted = NSImage(size: NSSize(width: iconSide, height: iconSide), flipped: true) { rect in
+                mark.draw(in: rect)
+                ink.setFill(); rect.fill(using: .sourceAtop)
+                return true
+            }
+            tinted.draw(in: NSRect(x: origin.x - iconSpacing, y: (bounds.height - iconSide) / 2, width: iconSide, height: iconSide), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
+        lettering(size: fittedSize, color: ink).draw(at: origin)
     }
 }
 
@@ -688,7 +704,7 @@ final class QuotaCardView: NSView {
         sectionTitle(title, y: y, width: titleWidth)
         if showAddress {
             let x = 20 + titleWidth + 10
-            openSourceButton = OpenSourcePlaque(frame: NSRect(x: x, y: y, width: 260 - x, height: 18))
+            openSourceButton = OpenSourcePlaque(frame: NSRect(x: x, y: y - 2, width: 260 - x, height: 22))
             addSubview(openSourceButton)
         }
     }

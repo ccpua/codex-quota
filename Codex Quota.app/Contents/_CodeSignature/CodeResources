@@ -8,6 +8,14 @@
 		<data>
 		ykwXwvwvQ9GTc4l7wsDVeSjjW5A=
 		</data>
+		<key>Resources/GitHubMark.svg</key>
+		<data>
+		VOCM5AVbzoiXFm0m/Ij4vMcfnp0=
+		</data>
+		<key>Resources/OCTICONS-LICENSE.txt</key>
+		<data>
+		Ky+KXVrt8ofk13OqFDmhMaGf8T8=
+		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
@@ -16,6 +24,20 @@
 			<key>hash2</key>
 			<data>
 			U7QQcNAi8pajWnCZn4ZF4lOAYyBojviXtw8j49lLRTI=
+			</data>
+		</dict>
+		<key>Resources/GitHubMark.svg</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			dCGCAJC1CsedfCv3yVGkM9cJioqcR0gJIHvdRfYtnUY=
+			</data>
+		</dict>
+		<key>Resources/OCTICONS-LICENSE.txt</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			2iWci9DeYnE8zc+IkQrryoEGRPmMLJErrYFPx56neN8=
 			</data>
 		</dict>
 	</dict>

@@ -875,7 +875,7 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     precondition(updateDownloadURL(for: "1.2.3")?.absoluteString == "https://github.com/ccpua/codex-quota/releases/download/v1.2.3/Codex-Quota-1.2.3-arm64.dmg")
     precondition(updateDownloadURL(for: "v1.0.6")?.absoluteString == "https://github.com/ccpua/codex-quota/releases/download/v1.0.6/Codex-Quota-1.0.6-arm64.dmg")
     precondition(updateDownloadURL(for: "../bad") == nil)
-    precondition(currentAppVersion == "1.0.9")
+    precondition(currentAppVersion == "1.1.0")
     let planSnapshot = QuotaSnapshot(["rateLimitsByLimitId": ["codex": ["planType": " Plus ", "primary": window(63, 10080)], "other": ["planType": "pro"]], "rateLimits": ["planType": "free"]])
     precondition(planSnapshot.planType == "plus" && planSnapshot.windows.first?.remaining == 37)
     precondition(QuotaSnapshot(["rateLimits": ["planType": "pro"]]).planType == "pro")
