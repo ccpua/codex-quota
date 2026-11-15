@@ -100,7 +100,18 @@ final class QuotaClient {
     private var generation = 0
     private var lastRequest = Date.distantPast
     var onResult: ((Result<QuotaSnapshot, Error>) -> Void)?
-    struct Failure: LocalizedError { let errorDescription: String? }
+    struct Failure: LocalizedError {
+        let errorDescription: String?
+        var mayBeNetworkFailure = false
+    }
+
+    static func isAuthenticationFailure(_ message: String) -> Bool {
+        let raw = message.lowercased()
+        // A failed request to the auth endpoint is still a network failure.
+        let transportFailures = ["error sending request", "timed out", "timeout", "dns", "could not resolve", "failed to connect", "connection refused", "connection reset", "network is unreachable", "network error", "transport error", "tls handshake", "网络", "超时"]
+        if transportFailures.contains(where: raw.contains) { return false }
+        return raw.contains("auth") || raw.contains("login") || raw.contains("401")
+    }
 
     func refresh() { queue.async { self.refreshOnQueue() } }
     func stop() { queue.sync { self.disconnect() } }
@@ -114,8 +125,9 @@ final class QuotaClient {
     private func report(_ result: Result<QuotaSnapshot, Error>) {
         DispatchQueue.main.async { self.onResult?(result) }
     }
-    private func fail(_ message: String) {
-        disconnect(); report(.failure(Failure(errorDescription: message)))
+    private func fail(_ message: String, mayBeNetworkFailure: Bool = false) {
+        VPNRecoveryLog.write("Quota failure: network=\(mayBeNetworkFailure), \(message)")
+        disconnect(); report(.failure(Failure(errorDescription: message, mayBeNetworkFailure: mayBeNetworkFailure)))
     }
     private func refreshOnQueue() {
         if pending != nil { return }
@@ -165,7 +177,7 @@ final class QuotaClient {
         send(["id": 1, "method": "initialize", "params": ["clientInfo": ["name": "codex_quota_monitor", "title": "Codex Quota", "version": currentAppVersion]]])
         queue.asyncAfter(deadline: .now() + 25) { [weak self] in
             guard let self = self, self.generation == currentGeneration, !self.ready else { return }
-            self.fail("连接超时，请检查网络后重试。")
+            self.fail("连接超时，请检查网络后重试。", mayBeNetworkFailure: true)
         }
     }
     private func send(_ value: [String: Any]) {
@@ -180,14 +192,15 @@ final class QuotaClient {
         send(["id": id, "method": "account/rateLimits/read"])
         queue.asyncAfter(deadline: .now() + 25) { [weak self] in
             guard let self = self, self.generation == currentGeneration, self.pending == id else { return }
-            self.fail("查询超时，保留上次数据；稍后自动重试。")
+            self.fail("查询超时，保留上次数据；稍后自动重试。", mayBeNetworkFailure: true)
         }
     }
     private func receive(_ message: [String: Any]) {
         if let id = message["id"] as? Int {
             if let error = message["error"] as? [String: Any], id == 1 || id == pending {
                 let raw = (error["message"] as? String ?? "").lowercased()
-                fail(raw.contains("auth") || raw.contains("login") || raw.contains("401") ? "请在 Codex 中登录后，再点刷新。" : "额度查询失败，请检查网络后刷新。")
+                let authenticationFailure = Self.isAuthenticationFailure(raw)
+                fail(authenticationFailure ? "请在 Codex 中登录后，再点刷新。" : "额度查询失败，请检查网络后刷新。", mayBeNetworkFailure: !authenticationFailure)
                 return
             }
             if id == 1 {
@@ -234,6 +247,9 @@ final class BenefitResetClient {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     let client = QuotaClient()
+    let vpnRecovery = VPNRecovery(configuration: { vpnRecoveryConfiguration })
+    let vpnNetworkCheck = VPNNetworkCheck()
+    var quotaMayHaveNetworkFailure = false
     let benefitClient = BenefitResetClient()
     let updateClient = UpdateClient()
     let codeActivityClient = CodeActivityClient()
@@ -308,19 +324,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             self.savePosition()
             self.handleHover(self.panel.frame.contains(NSEvent.mouseLocation))
         }
+        vpnRecovery.onReconnect = { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.refreshQuota() }
+        }
+        vpnRecovery.onNetworkCheckRequested = { [weak self] in self?.refreshNetworkHealth() }
         client.onResult = { [weak self] result in
             guard let self = self else { return }
             self.state.refreshing = false
             switch result {
             case .success(let snapshot):
+                let wasNetworkFailure = self.quotaMayHaveNetworkFailure
+                self.quotaMayHaveNetworkFailure = false
+                self.state.quotaNetworkReachable = false
+                if wasNetworkFailure { self.refreshNetworkHealth() }
                 self.state.windows = snapshot.windows
                 self.state.planType = snapshot.planType
                 self.state.lastUpdated = Date()
                 self.state.error = snapshot.windows.isEmpty ? "当前账号未返回可用额度数据。" : nil
                 self.resultSucceeded = !snapshot.windows.isEmpty
             case .failure(let error):
+                self.quotaMayHaveNetworkFailure = (error as? QuotaClient.Failure)?.mayBeNetworkFailure == true
+                self.state.quotaNetworkReachable = false
                 self.state.error = error.localizedDescription
                 self.state.planType = nil
+                if !self.smokeTest {
+                    self.vpnRecovery.quotaFailed(mayBeNetworkFailure: self.quotaMayHaveNetworkFailure)
+                }
             }
             self.render()
             if self.smokeTest {
@@ -392,6 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             RunLoop.main.add(activityTimer, forMode: .common)
         }
         client.refresh()
+        if !smokeTest { refreshNetworkHealth() }
         benefitClient.refresh()
         let predictionTimer = Timer(timeInterval: 600, repeats: true) { [weak self] _ in
             self?.benefitClient.refresh()
@@ -417,6 +447,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return false
     }
     func applicationWillTerminate(_ notification: Notification) {
+        vpnNetworkCheck.cancel()
+        vpnRecovery.stop()
         codeActivityTimer?.invalidate()
         tokenUsageTimer?.invalidate()
         timer?.invalidate(); benefitTimer?.invalidate(); updateTimer?.invalidate(); transitionTimer?.invalidate(); client.stop(); benefitClient.stop(); updateClient.stop(); terminationSignal?.cancel()
@@ -425,7 +457,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
     func scheduleRefresh() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: refreshIntervalSeconds, repeats: true) { [weak self] _ in self?.refreshQuota() }
+        let refreshTimer = Timer(timeInterval: refreshIntervalSeconds, repeats: true) { [weak self] _ in self?.refreshQuota() }
+        timer = refreshTimer
+        RunLoop.main.add(refreshTimer, forMode: .common)
     }
     @objc func configureRefreshInterval() {
         menuOpen = true
@@ -433,7 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         defer { menuOpen = false; handleHover(panel.frame.contains(NSEvent.mouseLocation)) }
         let alert = NSAlert()
         alert.messageText = tr("自动刷新间隔", "Refresh interval")
-        alert.informativeText = tr("输入 10–3600 秒。保存后立即生效，并在下次启动时保留。", "Enter 10–3600 seconds. Changes apply immediately and are saved.")
+        alert.informativeText = tr("输入 5–3600 秒。保存后立即生效，并在下次启动时保留。", "Enter 5–3600 seconds. Changes apply immediately and are saved.")
         let input = NSTextField(string: String(Int(refreshIntervalSeconds)))
         input.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
         alert.accessoryView = input
@@ -442,8 +476,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         NSApp.activate(ignoringOtherApps: true)
         while alert.runModal() == .alertFirstButtonReturn {
             guard let seconds = Double(input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)),
-                  seconds.isFinite, seconds >= 10, seconds <= 3600 else {
-                alert.informativeText = tr("请输入 10 到 3600 之间的秒数。", "Enter a value between 10 and 3600 seconds."); continue
+                  seconds.isFinite, seconds >= 5, seconds <= 3600 else {
+                alert.informativeText = tr("请输入 5 到 3600 之间的秒数。", "Enter a value between 5 and 3600 seconds."); continue
             }
             UserDefaults.standard.set(seconds.rounded(), forKey: "refreshIntervalSeconds")
             scheduleRefresh()
@@ -458,8 +492,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         refreshQuota()
     }
     func refreshQuota() {
+        if !smokeTest { refreshNetworkHealth() }
         guard !state.refreshing else { return }
         state.refreshing = true; render(); client.refresh()
+    }
+    func refreshNetworkHealth() {
+        guard vpnRecoveryConfiguration.canRun else {
+            vpnNetworkCheck.cancel()
+            let hadNetworkWarning = state.networkUnavailable || state.quotaNetworkReachable
+            state.quotaNetworkReachable = false
+            state.networkUnavailable = false
+            if hadNetworkWarning { render() }
+            return
+        }
+        let target: VPNNetworkCheck.Target = quotaMayHaveNetworkFailure ? .codex : .internet
+        vpnNetworkCheck.check(target: target) { [weak self] reachable in
+            guard let self, vpnRecoveryConfiguration.canRun else { return }
+            guard target == (self.quotaMayHaveNetworkFailure ? .codex : .internet) else {
+                self.refreshNetworkHealth()
+                return
+            }
+            self.state.networkUnavailable = !reachable
+            self.state.quotaNetworkReachable = target == .codex && reachable
+            self.vpnRecovery.networkCheckCompleted(reachable: reachable, target: target)
+            self.render()
+        }
     }
     func showPanel() { setExpanded(!autoCollapseEnabled); panel.orderFrontRegardless() }
     func savePosition() { UserDefaults.standard.set([capsuleOrigin.x, capsuleOrigin.y], forKey: "capsuleOrigin") }
@@ -694,6 +751,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         menu.addItem(interval)
         let hint = NSMenuItem(title: refreshIntervalLabel, action: nil, keyEquivalent: "")
         hint.isEnabled = false; menu.addItem(hint)
+        menu.addItem(.separator())
         let quitItem = NSMenuItem(title: tr("退出 Codex Quota", "Quit Codex Quota"), action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self; menu.addItem(quitItem)
         return menu
@@ -785,7 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let benefit = state.benefitReset.map { "\n" + tr("下次福利重置预测", "Next bonus reset (est.)") + ": \(benefitResetDateLabel($0)) (\(benefitResetStatus($0)))" } ?? ""
         let confidence = state.benefitResetConfidence.map { "\n" + tr("置信度", "Confidence") + ": " + benefitConfidenceLabel($0) } ?? ""
         let update = state.availableVersion.map { "\n" + tr("新版本", "Update available") + ": " + appVersionLabel($0) } ?? ""
-        let warning = state.error.map { usesEnglish ? "\nQuota unavailable. Please refresh." : "\n\($0)" } ?? ""
+        let warning = state.warning.map { usesEnglish && !state.networkUnavailable ? "\nQuota unavailable. Please refresh." : "\n\($0)" } ?? ""
         statusItem.button?.toolTip = details + benefit + confidence + update + warning + "\n" + state.freshness + "\n" + displayTimeZone.identifier + "\n" + tr("左键：显示/隐藏小窗；右键：菜单", "Left click: show/hide panel; right click: menu")
         statusItem.button?.setAccessibilityLabel("Codex Quota: " + (details.isEmpty ? tr("暂无数据", "No data") : details))
         // Keep the anchor view alive while the user is reading the popover.
@@ -846,6 +904,8 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     print("Passed: menu states, expanded mode, pointer exit, hide/reopen, automatic collapse and disabling a queued collapse.")
 } else if CommandLine.arguments.contains("--token-usage-test") {
     try runTokenUsageTests()
+} else if CommandLine.arguments.contains("--vpn-recovery-test") {
+    try runVPNRecoveryTests()
 } else if CommandLine.arguments.contains("--token-usage-scan") {
     let root = ProcessInfo.processInfo.environment["CODEX_HOME"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     print("Today's tokens: \(try TokenUsageScanner().scan(root: root).total)")
@@ -863,7 +923,9 @@ if let previewIndex = CommandLine.arguments.firstIndex(of: "--render-previews"),
     func window(_ used: Double, _ minutes: Int) -> [String: Any] { ["usedPercent": used, "windowDurationMins": minutes, "resetsAt": 1789367143.0] }
     precondition(validatedRefreshInterval(0) == 60)
     precondition(validatedRefreshInterval(.nan) == 60)
-    precondition(validatedRefreshInterval(9) == 60)
+    precondition(validatedRefreshInterval(4) == 60)
+    precondition(validatedRefreshInterval(5) == 5)
+    precondition(validatedRefreshInterval(9) == 9)
     precondition(validatedRefreshInterval(3601) == 60)
     precondition(validatedRefreshInterval(10) == 10)
     precondition(validatedRefreshInterval(3600) == 3600)

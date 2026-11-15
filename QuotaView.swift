@@ -33,7 +33,7 @@ func appVersionLabel(_ version: String) -> String {
 }
 
 func validatedRefreshInterval(_ value: Double) -> Double {
-    value.isFinite && value >= 10 && value <= 3600 ? value : 60
+    value.isFinite && value >= 5 && value <= 3600 ? value : 60
 }
 var refreshIntervalSeconds: Double {
     validatedRefreshInterval(UserDefaults.standard.double(forKey: "refreshIntervalSeconds"))
@@ -45,6 +45,15 @@ struct QuotaDisplayState {
     var planType: String?
     var lastUpdated: Date?
     var error: String?
+    var networkUnavailable = false
+    var quotaNetworkReachable = false
+    var warning: String? {
+        if networkUnavailable { return tr("网络连接不可用，请稍后重试。", "Internet unavailable. Please try again later.") }
+        if error != nil && quotaNetworkReachable {
+            return tr("额度查询异常，联网检测正常。", "Quota query failed; connectivity checks passed.")
+        }
+        return error
+    }
     var refreshing = false
     var pinned = true
     var benefitReset: Date?
@@ -63,7 +72,7 @@ struct QuotaDisplayState {
     var menuTitle: String {
         let update = availableVersion == nil ? "" : " ↑"
         guard let remaining = remaining else { return (refreshing ? "Codex ···" : "Codex —") + update }
-        return "Codex \(remaining)%\(error == nil ? "" : " ⚠︎")" + update
+        return "Codex \(remaining)%\(warning == nil ? "" : " ⚠︎")" + update
     }
     var freshness: String {
         if refreshing { return tr("正在更新", "Updating") }
@@ -71,7 +80,7 @@ struct QuotaDisplayState {
         let format = displayFormatter("HH:mm:ss")
         return "\(statePrefix) \(format.string(from: date))"
     }
-    private var statePrefix: String { error == nil ? tr("已更新", "Updated") : tr("上次更新", "Last update") }
+    private var statePrefix: String { warning == nil ? tr("已更新", "Updated") : tr("上次更新", "Last update") }
 }
 
 func membershipPlanLabel(_ plan: String?) -> String {
@@ -290,14 +299,14 @@ final class QuotaCapsuleView: NSView {
         if let remaining = state.remaining, remaining > 0 {
             let arc = NSBezierPath(); arc.lineWidth = 2; arc.lineCapStyle = .round
             arc.appendArc(withCenter: NSPoint(x: 20, y: 17), radius: 7, startAngle: 90, endAngle: 90 - CGFloat(remaining) * 3.6, clockwise: true)
-            (state.error == nil ? quotaAccent(remaining) : quotaAccent(20)).setStroke(); arc.stroke()
+            (state.warning == nil ? quotaAccent(remaining) : quotaAccent(20)).setStroke(); arc.stroke()
         }
         let value = state.remaining.map { "\($0)%" } ?? (state.refreshing ? "···" : "—")
         let font = NSFont.monospacedDigitSystemFont(ofSize: 14, weight: .semibold)
         let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: primaryInk]
         let size = (value as NSString).size(withAttributes: attributes)
         (value as NSString).draw(at: NSPoint(x: 36, y: (bounds.height - size.height) / 2 + 0.5), withAttributes: attributes)
-        if state.error != nil {
+        if state.warning != nil {
             quotaAccent(20).setFill(); NSBezierPath(ovalIn: NSRect(x: 81, y: 15, width: 4, height: 4)).fill()
         }
     }
@@ -527,7 +536,7 @@ final class QuotaCardView: NSView {
     init(state: QuotaDisplayState, target: AnyObject?, refresh: Selector?, pin: Selector?, more: Selector?, hide: Selector?, update: Selector? = nil) {
         self.state = state
         let blockCount = max(1, state.windows.count)
-        let errorHeight: CGFloat = state.error == nil ? 0 : 44
+        let errorHeight: CGFloat = state.warning == nil ? 0 : 44
         // The 18pt label frames include bottom font padding; center the visible
         // glyphs between the separators rather than centering those frames.
         let benefitHeight: CGFloat = 60
@@ -560,8 +569,8 @@ final class QuotaCardView: NSView {
             number.font = .monospacedDigitSystemFont(ofSize: 44, weight: .semibold)
             let numberWidth = (number.stringValue as NSString).size(withAttributes: [.font: number.font!]).width
             text("%", x: 21 + numberWidth, y: y + 36, width: 26, height: 26, size: 18, color: secondaryInk)
-            let condition = state.error != nil ? tr("待更新", "Stale") : window.remaining == 0 ? tr("已用尽", "Used up") : window.remaining <= 10 ? tr("即将用尽", "Very low") : window.remaining <= 25 ? tr("额度偏低", "Low") : tr("可用", "Available")
-            let badge = text(condition, x: 187, y: y + 38, width: 73, size: 10, color: state.error == nil ? quotaAccent(window.remaining) : secondaryInk)
+            let condition = state.warning != nil ? tr("待更新", "Stale") : window.remaining == 0 ? tr("已用尽", "Used up") : window.remaining <= 10 ? tr("即将用尽", "Very low") : window.remaining <= 25 ? tr("额度偏低", "Low") : tr("可用", "Available")
+            let badge = text(condition, x: 187, y: y + 38, width: 73, size: 10, color: state.warning == nil ? quotaAccent(window.remaining) : secondaryInk)
             badge.alignment = .right
             let progress = QuotaProgressView(frame: NSRect(x: 20, y: y + 76, width: 240, height: 4), remaining: window.remaining)
             progress.setAccessibilityElement(true); progress.setAccessibilityLabel(tr("\(name)剩余百分比", "\(name) remaining percent")); progress.setAccessibilityValue("\(window.remaining)%")
@@ -576,11 +585,11 @@ final class QuotaCardView: NSView {
             }
         }
         let errorY = headerHeight + CGFloat(blockCount) * 122
-        if let error = state.error {
-            let message = text(usesEnglish ? "Quota unavailable. Check your connection and Codex login, then refresh." : error, x: 20, y: errorY, width: 240, height: 39, size: 10, color: quotaAccent(20))
+        if let error = state.warning {
+            let message = text(usesEnglish && !state.networkUnavailable && !state.quotaNetworkReachable ? "Quota unavailable. Check your connection and Codex login, then refresh." : error, x: 20, y: errorY, width: 240, height: 39, size: 10, color: quotaAccent(20))
             message.maximumNumberOfLines = 2; message.lineBreakMode = .byWordWrapping; message.toolTip = message.stringValue
         }
-        let benefitY = errorY + (state.error == nil ? 0 : 44)
+        let benefitY = errorY + (state.warning == nil ? 0 : 44)
         // Center the visible two-line text block, allowing for NSTextField's font insets.
         let predictionTitleY = benefitY + 13
         let predictionDetailsY = predictionTitleY + 21
@@ -614,14 +623,14 @@ final class QuotaCardView: NSView {
         let codeSeparator = NSBox(frame: NSRect(x: 20, y: codeY, width: 240, height: 1))
         codeSeparator.boxType = .separator; addSubview(codeSeparator)
         sectionTitle(tr("今日代码变更", "Today's code changes"), y: codeY + 10, width: 132)
-        let tokenLabel = text(tr("token消耗", "Tokens") + " " + tokenUsageLabel(state.tokenUsage?.total), x: 154, y: codeY + 10, width: 106, size: 10, color: secondaryInk, weight: .medium)
+        let tokenLabel = text("TOKEN " + tokenUsageLabel(state.tokenUsage?.total), x: 154, y: codeY + 10, width: 106, size: 10, color: secondaryInk, weight: .medium)
         tokenLabel.alignment = .right
         let tokenAccent = NSColor(name: nil) { appearance in
             quotaIsDark(appearance)
                 ? NSColor(srgbRed: 0.64, green: 0.75, blue: 0.98, alpha: 1)
                 : NSColor(srgbRed: 0.28, green: 0.40, blue: 0.73, alpha: 1)
         }
-        let tokenText = NSMutableAttributedString(string: tr("token消耗", "Tokens") + " ", attributes: [.font: tokenLabel.font!, .foregroundColor: secondaryInk])
+        let tokenText = NSMutableAttributedString(string: "TOKEN ", attributes: [.font: tokenLabel.font!, .foregroundColor: secondaryInk])
         tokenText.append(NSAttributedString(string: tokenUsageLabel(state.tokenUsage?.total), attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold), .foregroundColor: state.tokenUsage == nil ? secondaryInk : tokenAccent]))
         let tokenParagraph = NSMutableParagraphStyle()
         tokenParagraph.alignment = .right; tokenParagraph.lineBreakMode = .byTruncatingTail

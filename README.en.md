@@ -31,6 +31,29 @@ This version has not been notarized by Apple. If macOS blocks the first launch b
 
 Hover over the capsule to see details, or drag it to move. Right-click to check for updates, change the language, appearance, or refresh interval, or quit.
 
+## Reconnect a VPN when offline
+
+Recovery runs silently in the background with the existing local shortcut configuration (for example, `reconnect VPN`), without menu controls or a configuration dialog. The internal preferences `vpnReconnectEnabled` and `vpnReconnectShortcutName` control whether it runs and which shortcut it invokes. Without configuration, it does not run.
+
+Paste the [reconnect script](scripts/reconnect-vpn.applescript) into a **Run AppleScript** action. It reopens a closed main window through the tray's Show menu and selects Home, then waits for the disconnected state specifically before connecting again.
+
+The script supports both legacy fixed identifiers and AmneziaVPN 5.1's generated QML identifiers. It matches the `ConnectButton` type without depending on numeric suffixes, and reads or presses a control only when exactly one matches. The updated Home tab is identified by its type and label.
+
+Qt may replace accessibility objects as connection state changes. The script treats temporarily stale references as transitions and keeps polling so a successful reconnection does not produce a false failure. Permission errors still propagate.
+
+When enabled, the app independently probes two general HTTPS endpoints at the refresh interval and reconnects only if neither is reachable. After a suspected quota transport failure, it instead checks the actual ChatGPT quota and OpenAI login endpoints so reachable unrelated sites cannot hide a failed VPN route. Both service routes must respond; a transport failure on either allows recovery. HTTP responses including 401, 403 and 500 still prove connectivity and do not trigger reconnects. Yellow can also indicate a quota error; the warning explains when connectivity checks pass, while skipped recovery details appear only in the log.
+
+If a same-named Shortcuts-exported application exists in `~/Applications` or `/Applications`, it launches through LaunchServices using that app's own Accessibility authorization. Otherwise it runs `shortcuts run "shortcut name"`. Runs cannot overlap, and attempts are at least 180 seconds apart. The app refreshes quota after completion.
+
+Immediately before every actual invocation, the app rereads macOS system VPN state using `scutil --nc list`. Any system VPN in `Connected` state skips that Amnezia reconnect. Unreadable or unrecognized state also skips it. A skipped attempt does not consume cooldown; after the other VPN disconnects, the next outage check reevaluates eligibility. This check never starts or stops other VPNs or guesses from `utun` interfaces. Third-party tunnels absent from the system VPN list are outside its scope.
+
+Configure the shortcut and its Accessibility permissions first. macOS may still request permission on first invocation. Recovery execution details are written only to `~/Library/Logs/CodexQuota/vpn-recovery.log`; the UI shows connectivity and quota status. The feature is off by default, and does not modify VPN/shortcut configuration. Operation while locked or without an accessible window depends on the shortcut itself.
+
+After building, run `"Codex Quota.app/Contents/MacOS/CodexQuota" --vpn-recovery-test` for mocked policy tests and harmless process tests. They do not run a real shortcut or change the VPN.
+
+On macOS, run `python3 scripts/test-reconnect-vpn.py` to check legacy/generated identifiers, Chinese/English states, delayed disconnection and timeout handling. All UI operations are mocked; no real VPN is changed.
+
+
 <details>
 <summary>Optional: install from source</summary>
 

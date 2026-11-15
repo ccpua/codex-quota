@@ -4,6 +4,14 @@ enum DisplayTheme: String {
     case system, light, dark
 }
 
+var vpnRecoveryConfiguration: VPNRecoveryConfiguration {
+    VPNRecoveryConfiguration(
+        enabled: UserDefaults.standard.bool(forKey: "vpnReconnectEnabled"),
+        shortcutName: (UserDefaults.standard.string(forKey: "vpnReconnectShortcutName") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+}
+
 var autoCollapseEnabled: Bool {
     UserDefaults.standard.object(forKey: "autoCollapseEnabled") as? Bool ?? true
 }
